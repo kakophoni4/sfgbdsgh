@@ -7,7 +7,7 @@
  */
 
 var EXPECTED_TOKEN = "";
-var VERSION = "v4-egrul-names";
+var VERSION = "v3-pretty-days";
 
 function doPost(e) {
   try {
@@ -50,6 +50,11 @@ function doPost(e) {
       keep[name] = true;
       var sh = ss.getSheetByName(name);
       if (!sh) sh = ss.insertSheet(name);
+      // старый фильтр блокирует createFilter / иногда clear
+      try {
+        var oldF = sh.getFilter();
+        if (oldF) oldF.remove();
+      } catch (ignoreFilter) {}
       sh.clear();
       sh.clearFormats();
       sh.setHiddenGridlines(true);
@@ -122,6 +127,10 @@ function doPost(e) {
           }
         }
 
+        try {
+          var prev = sh.getFilter();
+          if (prev) prev.remove();
+        } catch (ignore2) {}
         sh.getRange(1, 1, rows.length + 1, cols).createFilter();
       }
 
