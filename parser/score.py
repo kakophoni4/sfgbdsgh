@@ -397,6 +397,47 @@ def score_payload(p: dict[str, Any]) -> dict:
     }
 
 
+def _parse_dossier_bits(dossier: str) -> dict[str, str]:
+    """Достаёт числа/факты из строки Companium для живого итога."""
+    import re
+
+    d = dossier or ""
+    out: dict[str, str] = {}
+    m = re.search(r"суды:\s*(нет дел|\d+\s*дел)", d, re.I)
+    if m:
+        out["courts"] = m.group(1).strip()
+    m = re.search(r"долги ФССП:\s*(нет|\d+\s*пр\.)", d, re.I)
+    if m:
+        out["fssp"] = m.group(1).strip()
+    m = re.search(r"сотрудники:\s*(\d+)", d, re.I)
+    if m:
+        out["employees"] = m.group(1)
+    m = re.search(r"уст\.?капитал:\s*([\d\s]+)\s*₽", d, re.I)
+    if m:
+        out["capital"] = m.group(1).strip()
+    m = re.search(r"МСП:\s*([^;]+)", d, re.I)
+    if m:
+        out["msp"] = m.group(1).strip()
+    m = re.search(r"выручка:\s*([^;]+)", d, re.I)
+    if m:
+        out["rev"] = m.group(1).strip()[:160]
+    m = re.search(r"учредитель:\s*([^;]+)", d, re.I)
+    if m:
+        out["founder"] = m.group(1).strip()[:100]
+    m = re.search(r"федресурс:\s*([^;]+)", d, re.I)
+    if m:
+        out["fed"] = m.group(1).strip()
+    m = re.search(r"недостоверки:\s*([^;]+)", d, re.I)
+    if m:
+        out["unrel"] = m.group(1).strip()
+    m = re.search(r"лицензии:\s*([^;]+)", d, re.I)
+    if m:
+        out["lic"] = m.group(1).strip()[:80]
+    if "Companium недоступен" in d:
+        out["error"] = d.replace("Companium недоступен:", "").strip()[:80]
+    return out
+
+
 def _build_human_verdict(
     *,
     verdict: str,
@@ -411,27 +452,57 @@ def _build_human_verdict(
     listing_days: int,
     listing_count: int,
 ) -> str:
-    """Короткий вердикт живым языком — как записка аналитика, не дамп полей."""
+    """Живой полный вердикт: реестры + Companium + финансы + пост."""
+    import re
+
     name = (p.get("name") or checklist.get("B_name") or "Компания").strip()
     price = p.get("price_rub")
     price_s = f"{price:,} ₽".replace(",", " ") if price else "цена не указана"
+    inn = (p.get("inn") or "").strip()
+    status = str(checklist.get("status") or "").strip()
+    director = str(checklist.get("F_director") or "").strip()
+    address = str(checklist.get("F_address") or "").strip()
+    reg_date = str(checklist.get("C_reg_date") or p.get("reg_date_raw") or "").strip()
 
     if verdict == "ДА":
-        lead = f"Беру в работу: {name} за {price_s}. Оценка {score} из 100 — лот выглядит интересным."
+        lead = (
+            f"Беру в работу: {name} за {price_s}. "
+            f"Оценка {score} из 100 — лот выглядит интересным"
+            + (f", ИНН {inn}" if inn else "")
+            + "."
+        )
     elif verdict == "СОМНИТЕЛЬНО":
         lead = (
             f"Пока на паузе: {name} за {price_s}. Оценка {score} из 100 — "
-            f"есть смысл смотреть, но без ручной проверки брать нельзя."
+            f"есть смысл смотреть, но без ручной проверки брать нельзя"
+            + (f" (ИНН {inn})" if inn else " (ИНН пока нет)")
+            + "."
         )
     else:
         lead = (
             f"Скорее пропускаю: {name} за {price_s}. Оценка {score} из 100 — "
-            f"рисков или дыр в данных слишком много."
+            f"рисков или дыр в данных слишком много"
+            + (f", ИНН {inn}" if inn else "")
+            + "."
         )
 
     paras = [lead]
 
-    # Реестры — одним абзацем
+    # Карточка ЕГРЮЛ одной фразой
+    card: list[str] = []
+    if status:
+        card.append(f"статус «{status}»")
+    if reg_date:
+        card.append(f"регистрация {reg_date}")
+    if director:
+        card.append(f"директор: {director}")
+    if address:
+        addr_short = address if len(address) <= 90 else address[:87] + "…"
+        card.append(f"адрес: {addr_short}")
+    if card:
+        paras.append("По ЕГРЮЛ: " + "; ".join(card) + ".")
+
+    # Реестры — с числами из notes / dossier
     clean: list[str] = []
     dirty: list[str] = []
     p_v = str(checklist.get("P_court_cases") or "")
@@ -439,35 +510,115 @@ def _build_human_verdict(
     o_v = str(checklist.get("O_clean") or "")
     i_v = str(checklist.get("I_reliable") or "")
     v_v = str(checklist.get("V_leases") or "")
+    p_note = str(checklist.get("P_note") or "")
+    l_note = str(checklist.get("L_note") or "")
+    dossier = str(checklist.get("dossier") or "")
+    bits = _parse_dossier_bits(dossier)
 
     if p_v in {"нет дел", "НЕТ"}:
         clean.append("арбитражных дел не видно")
     elif p_v in {"есть дела", "ЕСТЬ"}:
-        dirty.append("есть арбитраж")
+        n_m = re.search(r"дел[а]?=(\d+)", p_note) or re.search(r"(\d+)\s*дел", bits.get("courts", ""))
+        if n_m:
+            dirty.append(f"в арбитраже {n_m.group(1)} дел — обязательно открой карточки")
+        else:
+            dirty.append("есть арбитражные дела")
+    elif p_v in {"", "ПРОВЕРИТЬ"}:
+        dirty.append("суды ещё не проверены")
+
     if l_v in {"нет долгов/ИЛ", "ДА"}:
         clean.append("по ФССП долгов не видно")
     elif "есть долг" in l_v.lower() or l_v == "НЕТ":
-        dirty.append("есть долги или исполнительные листы")
+        n_m = re.search(r"производств=(\d+)", l_note) or re.search(
+            r"(\d+)\s*пр", bits.get("fssp", "")
+        )
+        if n_m:
+            dirty.append(f"на ФССП {n_m.group(1)} производств")
+        else:
+            dirty.append("есть долги или исполнительные листы")
+    elif l_v in {"", "ПРОВЕРИТЬ"}:
+        dirty.append("долги ФССП не проверены")
+
     if "нет банкрот" in o_v.lower() or o_v == "ДА":
         clean.append("банкротства нет")
     elif o_v.startswith("есть") or o_v == "НЕТ":
         dirty.append("есть признаки банкротства или дисквала")
+    elif not o_v or o_v == "ПРОВЕРИТЬ":
+        dirty.append("банкротство не проверено")
+
     if i_v == "ДА":
         clean.append("недостоверных сведений в ЕГРЮЛ не отмечено")
     elif i_v == "НЕТ":
         dirty.append("в ЕГРЮЛ есть отметка о недостоверности")
+
     if "нет лизинг" in v_v.lower():
         clean.append("лизинга и залогов не видно")
     elif "есть записи" in v_v.lower() or "есть лизинг" in v_v.lower():
-        dirty.append("на Федресурсе есть записи — стоит открыть ссылку")
+        fed = bits.get("fed") or "есть записи"
+        dirty.append(f"на Федресурсе {fed} — открой ссылку перед сделкой")
 
     reg_parts: list[str] = []
     if clean:
-        reg_parts.append("По открытым реестрам картина спокойная: " + ", ".join(clean) + ".")
+        reg_parts.append("По открытым реестрам спокойно: " + ", ".join(clean) + ".")
     if dirty:
         reg_parts.append("Настораживает: " + ", ".join(dirty) + ".")
     if reg_parts:
         paras.append(" ".join(reg_parts))
+
+    # Companium — отдельный человечный абзац
+    if bits.get("error"):
+        paras.append(
+            f"Отчёт Companium не удалось снять ({bits['error']}) — "
+            f"по этой карточке картина неполная."
+        )
+    elif dossier and not bits.get("error"):
+        c_bits: list[str] = []
+        if bits.get("courts"):
+            c_bits.append(
+                "судов нет"
+                if bits["courts"].startswith("нет")
+                else f"суды: {bits['courts']}"
+            )
+        if bits.get("fssp"):
+            c_bits.append(
+                "долгов ФССП нет"
+                if bits["fssp"] == "нет"
+                else f"ФССП: {bits['fssp']}"
+            )
+        if bits.get("unrel"):
+            if bits["unrel"].upper().startswith("ЕСТЬ") or bits["unrel"].lower() == "есть":
+                c_bits.append("недостоверки ЕСТЬ")
+            else:
+                c_bits.append("недостоверок нет")
+        if bits.get("employees"):
+            c_bits.append(f"{bits['employees']} сотрудник(ов)")
+        elif checklist.get("employees") not in (None, ""):
+            c_bits.append(f"{checklist.get('employees')} сотрудник(ов)")
+        if bits.get("msp"):
+            c_bits.append(f"МСП: {bits['msp']}")
+        elif checklist.get("msp"):
+            c_bits.append(f"МСП: {checklist.get('msp')}")
+        if bits.get("capital"):
+            c_bits.append(f"уставный капитал {bits['capital']} ₽")
+        elif checklist.get("capital_rub") not in (None, ""):
+            try:
+                c_bits.append(
+                    f"уставный капитал {int(checklist['capital_rub']):,} ₽".replace(",", " ")
+                )
+            except (TypeError, ValueError):
+                pass
+        if bits.get("rev") and "нет сведений" not in bits["rev"].lower():
+            c_bits.append(f"по выручке Companium: {bits['rev']}")
+        elif checklist.get("revenue_note"):
+            c_bits.append(f"по выручке Companium: {checklist.get('revenue_note')}")
+        if bits.get("founder"):
+            c_bits.append(f"учредитель: {bits['founder']}")
+        elif checklist.get("founder"):
+            c_bits.append(f"учредитель: {checklist.get('founder')}")
+        if bits.get("lic") and "нет сведений" not in bits["lic"].lower():
+            c_bits.append(f"лицензии: {bits['lic']}")
+        if c_bits:
+            paras.append("Сводка Companium: " + "; ".join(c_bits) + ".")
 
     # Финансы / возраст
     fin: list[str] = []
@@ -478,16 +629,19 @@ def _build_human_verdict(
     elif r_v.startswith("есть"):
         fin.append("в отчётности есть выручка выше 500 тыс.")
     elif "выручка не указана" in r_v or r_v.startswith("мало"):
-        fin.append("отчётность есть, но живых оборотов почти не видно — похоже на нулёвку или «пустую» фирму")
+        fin.append(
+            "отчётность есть, но живых оборотов почти не видно — "
+            "похоже на нулёвку или «пустую» фирму"
+        )
     elif r_v.startswith("нет данных") or not r_v:
         fin.append("по финансам ФНС данных мало")
     if u_v in {"ДА", "сдана"} and "отчётность" not in " ".join(fin):
         fin.append("отчётность в базе ФНС сдана")
+    elif u_v in {"НЕТ", "не сдана"}:
+        fin.append("отчётность в ФНС не сдана или не найдена")
 
     reg_year = p.get("reg_year")
     if not reg_year and checklist.get("C_reg_date"):
-        import re
-
         m = re.search(r"(20\d{2}|19\d{2})", str(checklist.get("C_reg_date")))
         reg_year = int(m.group(1)) if m else None
     if reg_year and reg_year >= 2024:
@@ -528,14 +682,20 @@ def _build_human_verdict(
         post_bits.append("в посте упоминается расчётный счёт")
     if p.get("primary_1c_claim"):
         post_bits.append("обещают первичку/1С")
+    sno = (p.get("sno") or "").strip()
+    if sno:
+        post_bits.append(f"налог в посте: {sno}")
     if post_bits:
         paras.append("Из объявления: " + "; ".join(post_bits) + ".")
 
-    # Итог одной фразой
+    # Хвост
     if confidence == "high":
         tail = "Данных достаточно, чтобы решить: смотреть дальше или нет."
     elif confidence == "medium":
-        tail = "Картина собрана неплохо, но перед сделкой всё равно сверьте выписку, счета и комплект вручную."
+        tail = (
+            "Картина собрана неплохо, но перед сделкой всё равно сверьте "
+            "выписку ЕГРЮЛ, счета и комплект вручную."
+        )
     else:
         tail = "Пока это скорее черновик — не хватает ключевых данных для уверенного решения."
 
@@ -543,9 +703,14 @@ def _build_human_verdict(
         x in " ".join(risks).lower()
         for x in ("молод", "оборот", "нулёв", "выручка не", "долго в продаж", "повторя")
     ):
-        tail += " Несмотря на высокий балл, я бы уточнил обороты и причину продажи — на бумаге чисто, по сути может быть пустышка."
+        tail += (
+            " Несмотря на высокий балл, я бы уточнил обороты и причину продажи — "
+            "на бумаге чисто, по сути может быть пустышка."
+        )
     elif verdict == "НЕТ":
         tail += " Если очень нужно — только после жёсткой ручной проверки."
+    if not dossier:
+        tail += " Полного отчёта Companium ещё нет — итог без этой сводки."
 
     paras.append(tail)
     return " ".join(paras)
