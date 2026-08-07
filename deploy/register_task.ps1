@@ -24,9 +24,10 @@ if (-not (Test-Path $script)) {
 
 Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 
+# -WindowStyle Hidden: без синего окна каждые 5 мин (лог всё равно в data\logs)
 $action = New-ScheduledTaskAction `
     -Execute "powershell.exe" `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$script`"" `
+    -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$script`"" `
     -WorkingDirectory $Root
 
 # TimeSpan.MaxValue is rejected by Task Scheduler (HRESULT 0x80041318).
