@@ -19,7 +19,7 @@ from parser.export_excel import (
     _zsk_cell,
 )
 
-EXPORT_VERSION = "v3-pretty-days"
+EXPORT_VERSION = "v4-row-colors"
 
 # Компактная шапка для онлайн-таблицы (без сырого текста и ручных пустышек)
 SHEET_HEADERS = [

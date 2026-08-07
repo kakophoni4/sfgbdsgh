@@ -7,7 +7,7 @@
  */
 
 var EXPECTED_TOKEN = "";
-var VERSION = "v3-pretty-days";
+var VERSION = "v4-row-colors";
 
 function doPost(e) {
   try {
@@ -90,39 +90,40 @@ function doPost(e) {
 
       if (rows.length > 0) {
         sh.setRowHeights(2, rows.length, 24);
-        // зебра
-        for (var rr = 0; rr < rows.length; rr++) {
-          var bg = rr % 2 === 0 ? "#FFFFFF" : "#F3F6FA";
-          sh.getRange(rr + 2, 1, 1, cols).setBackground(bg);
-        }
         // тонкие границы
         sh.getRange(1, 1, rows.length + 1, cols)
           .setBorder(true, true, true, true, true, true, "#D0D7DE", SpreadsheetApp.BorderStyle.SOLID);
 
-        // цвета вердикта / ЗСК
-        if (verdictCol >= 1 && verdictCol <= cols) {
-          for (var v = 0; v < rows.length; v++) {
-            var cell = sh.getRange(v + 2, verdictCol);
-            var t = String(rows[v][verdictCol - 1] || "").toUpperCase();
-            if (t.indexOf("ДА") === 0 || t === "БРАТЬ") {
-              cell.setBackground("#C6EFCE").setFontWeight("bold");
-            } else if (t.indexOf("НЕТ") === 0) {
-              cell.setBackground("#FFC7CE").setFontWeight("bold");
-            } else if (t.indexOf("СОМН") === 0 || t.indexOf("ОСТОРОЖ") >= 0) {
-              cell.setBackground("#FFEB9C").setFontWeight("bold");
-            }
+        // цвет ВСЕЙ строки по итогу (вердикту)
+        for (var v = 0; v < rows.length; v++) {
+          var rowRange = sh.getRange(v + 2, 1, 1, cols);
+          var verdictText = "";
+          if (verdictCol >= 1 && verdictCol <= cols) {
+            verdictText = String(rows[v][verdictCol - 1] || "");
+          }
+          var kind = _verdictKind(verdictText);
+          var rowBg = "#FFFFFF";
+          if (kind === "yes") rowBg = "#C6EFCE";
+          else if (kind === "no") rowBg = "#FFC7CE";
+          else if (kind === "maybe") rowBg = "#FFEB9C";
+          else rowBg = v % 2 === 0 ? "#FFFFFF" : "#F3F6FA";
+          rowRange.setBackground(rowBg);
+          if (kind !== "none" && verdictCol >= 1 && verdictCol <= cols) {
+            sh.getRange(v + 2, verdictCol).setFontWeight("bold");
           }
         }
+
+        // ЗСК — чуть ярче поверх цвета строки
         if (zskCol >= 1 && zskCol <= cols) {
           for (var z = 0; z < rows.length; z++) {
             var zc = sh.getRange(z + 2, zskCol);
             var zt = String(rows[z][zskCol - 1] || "").toLowerCase();
             if (zt.indexOf("зелён") >= 0 || zt.indexOf("зелен") >= 0) {
-              zc.setBackground("#C6EFCE");
+              zc.setBackground("#A9D08E");
             } else if (zt.indexOf("жёлт") >= 0 || zt.indexOf("желт") >= 0) {
-              zc.setBackground("#FFEB9C");
+              zc.setBackground("#FFD966");
             } else if (zt.indexOf("красн") >= 0) {
-              zc.setBackground("#FFC7CE");
+              zc.setBackground("#FF8B94");
             }
           }
         }
@@ -223,6 +224,42 @@ function _setWidths(sh, cols) {
       sh.setRowHeights(2, last - 1, 48);
     }
   }
+}
+
+/**
+ * yes / maybe / no / none — по тексту колонки «Итог».
+ * Поддерживает и короткий вердикт (ДА/НЕТ), и живой summary.
+ */
+function _verdictKind(text) {
+  var t = String(text || "").trim();
+  if (!t) return "none";
+  var low = t.toLowerCase();
+  var up = t.toUpperCase();
+
+  if (
+    low.indexOf("беру в работу") === 0 ||
+    up.indexOf("ДА") === 0 ||
+    up === "БРАТЬ" ||
+    low.indexOf("брать") === 0
+  ) {
+    return "yes";
+  }
+  if (
+    low.indexOf("скорее пропускаю") === 0 ||
+    low.indexOf("пропускаю") === 0 ||
+    up.indexOf("НЕТ") === 0
+  ) {
+    return "no";
+  }
+  if (
+    low.indexOf("пока на паузе") === 0 ||
+    low.indexOf("на паузе") === 0 ||
+    up.indexOf("СОМН") === 0 ||
+    low.indexOf("осторож") >= 0
+  ) {
+    return "maybe";
+  }
+  return "none";
 }
 
 function _json(obj) {
