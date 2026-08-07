@@ -179,6 +179,8 @@ def resolve_sources(args: argparse.Namespace) -> list[str]:
         explicit.append("fedresurs")
     if args.enrich_unreliable:
         explicit.append("unreliable")
+    if getattr(args, "enrich_zsk_bot", False):
+        explicit.append("zsk_bot")
 
     if explicit and not args.enrich and not args.enrich_only:
         return explicit
@@ -212,6 +214,7 @@ async def async_main(args: argparse.Namespace) -> None:
         or args.enrich_companium
         or args.enrich_checko
         or args.enrich_saby
+        or getattr(args, "enrich_zsk_bot", False)
         or getattr(args, "enrich_core", False)
     )
     do_scrape = True
@@ -340,6 +343,11 @@ def main() -> None:
         "--enrich-core",
         action="store_true",
         help="ядро + запасные: ЕГРЮЛ БФО Companium Checko Федресурс Saby",
+    )
+    ap.add_argument(
+        "--enrich-zsk-bot",
+        action="store_true",
+        help="ЗСК через Telegram @zskbenefitsarbot по ИНН",
     )
     ap.add_argument("--enrich-limit", type=int, default=ENRICH_LIMIT)
     ap.add_argument("--enrich-pause", type=float, default=None)

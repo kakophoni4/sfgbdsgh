@@ -35,6 +35,7 @@ $files = @(
     "parser/enrich/fssp.py",
     "parser/enrich/fedresurs.py",
     "parser/enrich/unreliable.py",
+    "parser/enrich/zsk_bot.py",
     "parser/enrich/http_util.py",
     "parser/enrich/proxy_pool.py",
     "deploy/update_raw_files.ps1",

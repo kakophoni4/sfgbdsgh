@@ -16,7 +16,7 @@ from parser.export_excel import (
     _first_seen_day,
     _human_flag,
     _sheet_title,
-    _zsk_cell,
+    _zsk_cell_payload,
 )
 
 EXPORT_VERSION = "v4-row-colors-score"
@@ -193,7 +193,7 @@ def sheet_row(p: dict[str, Any]) -> list[Any]:
         _turnover_cell(p, cl, sc),
         u_txt,
         v_txt,
-        _zsk_cell(p.get("zsk_claim") or ""),
+        _zsk_cell_payload(p),
         _short_verdict(p),
         # строка, иначе Sheets воспринимает 91 как дату 1900-04-01
         "" if sc.get("score") in (None, "") else str(int(sc.get("score"))),

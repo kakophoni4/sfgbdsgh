@@ -122,7 +122,7 @@ try {
     $ec = Invoke-PyLogged -PyArgs @("run_parser.py", "--since-days", "2", "--limit", "5000")
     if ($ec -ne 0) { $code = $ec }
 
-    # 1 раунд: дыры добьёт следующий тик планировщика (каждые 5 мин)
+    # 1 раунд core: дыры добьёт следующий тик планировщика (каждые 5 мин)
     $maxRounds = 1
     for ($i = 1; $i -le $maxRounds; $i++) {
         Set-JobStatus "enrich" ("round $i/$maxRounds unique INNs, limit=0")
@@ -133,6 +133,15 @@ try {
             $code = $ec
             Write-Log "enrich exit=$ec - continue to export"
         }
+    }
+
+    Set-JobStatus "enrich" "ZSK bot @zskbenefitsarbot"
+    Write-Log "==> enrich-zsk-bot (unique INNs, limit=0)"
+    $zskLog = Join-Path $logDir ("zsk_{0}.log" -f $stamp)
+    $ec = Invoke-PyLogged -PyArgs @("run_parser.py", "--enrich-only", "--enrich-zsk-bot", "--enrich-limit", "0") -ExtraLogs @($zskLog)
+    if ($ec -ne 0) {
+        $code = $ec
+        Write-Log "zsk-bot exit=$ec - continue to export"
     }
 
     Set-JobStatus "export" "rescore + excel + sheets"

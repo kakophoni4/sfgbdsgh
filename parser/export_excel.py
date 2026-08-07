@@ -78,6 +78,25 @@ def _zsk_cell(claim: str) -> str:
     }.get(claim or "unknown", "не указан в посте")
 
 
+def _zsk_cell_payload(p: dict[str, Any]) -> str:
+    """Бот главнее заявления продавца."""
+    bot = ((p.get("enrich") or {}).get("zsk_bot") or {})
+    level = (p.get("zsk_verified") or bot.get("level") or "").strip()
+    claim = p.get("zsk_claim") or "unknown"
+    if level in {"green", "yellow", "red"} and not bot.get("error"):
+        color = {"green": "зелёный", "yellow": "жёлтый", "red": "красный"}[level]
+        label = str(bot.get("label") or {"green": "Низкий", "yellow": "Средний", "red": "Высокий"}[level])
+        extra = ""
+        if claim in {"green", "yellow", "red"} and claim != level:
+            extra = f"; в посте: {_zsk_cell(claim).split('(')[0].strip()}"
+        elif claim == level:
+            extra = "; пост совпадает"
+        return f"{color} (бот): {label}{extra}"
+    if bot.get("error"):
+        return f"{_zsk_cell(claim)}; бот: {bot.get('error')}"
+    return _zsk_cell(claim)
+
+
 def _r_cell(checklist: dict[str, Any], scoring: dict[str, Any], p: dict[str, Any]) -> str:
     r = str(checklist.get("R_turnover") or "").strip()
     buh_ok = bool(
@@ -242,7 +261,7 @@ def row_from_payload(p: dict[str, Any]) -> list[Any]:
         checklist.get("P_court_cases") or "",
         q_hint or "не сказано в посте",
         _r_cell(checklist, scoring, p),
-        _zsk_cell(p.get("zsk_claim") or ""),
+        _zsk_cell_payload(p),
         t_hint or "не сказано в посте",
         _human_flag("U_reports_filed", checklist.get("U_reports_filed")) or "нет данных",
         _v_cell(checklist) or "нет данных",
@@ -330,7 +349,12 @@ def _write_sheet(ws: Worksheet, payloads: list[dict[str, Any]]) -> None:
             cell = ws.cell(r, c, val)
             cell.alignment = Alignment(wrap_text=True, vertical="top")
 
-        zsk = p.get("zsk_claim") or ""
+        zsk = (
+            p.get("zsk_verified")
+            or ((p.get("enrich") or {}).get("zsk_bot") or {}).get("level")
+            or p.get("zsk_claim")
+            or ""
+        )
         # цвет всей строки по вердикту
         verdict = (p.get("scoring") or {}).get("verdict")
         if verdict in VERDICT_FILL:

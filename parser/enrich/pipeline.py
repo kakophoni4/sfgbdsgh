@@ -602,6 +602,8 @@ def enrich_db(
         "saby_err": 0,
         "unreliable_ok": 0,
         "unreliable_err": 0,
+        "zsk_bot_ok": 0,
+        "zsk_bot_err": 0,
         "attempted": 0,
     }
 
@@ -886,7 +888,107 @@ def enrich_db(
                 err_key="unreliable_err",
                 summary=lambda u: f"I={(u.get('enrich') or {}).get('checklist', {}).get('I_reliable')}",
             )
+
+        if "zsk_bot" in sources:
+            zstats = enrich_zsk_bot_db(db, limit=limit, pause=max(pause or 0, 2.5))
+            stats["zsk_bot_ok"] += zstats.get("zsk_bot_ok", 0)
+            stats["zsk_bot_err"] += zstats.get("zsk_bot_err", 0)
+            stats["attempted"] += zstats.get("attempted", 0)
     except StopIteration:
         pass
+
+    return stats
+
+
+def enrich_zsk_bot_db(
+    db: ListingDB,
+    *,
+    limit: int = 0,
+    pause: float = 3.0,
+) -> dict[str, int]:
+    """Пакетный опрос @zskbenefitsarbot одним Telethon-клиентом."""
+    import asyncio
+
+    from parser.dedup import unique_only
+    from parser.enrich.zsk_bot import (
+        apply_zsk_report,
+        enrich_zsk_bot_async,
+        needs_zsk_bot,
+    )
+    from tg_client import make_client
+
+    payloads = unique_only(db.all_payloads())
+    candidates = [p for p in payloads if needs_zsk_bot(p)]
+    if limit > 0:
+        candidates = candidates[:limit]
+
+    stats = {"zsk_bot_ok": 0, "zsk_bot_err": 0, "attempted": 0}
+    print(f"ЗСК-бот: {len(candidates)} шт")
+    if not candidates:
+        return stats
+
+    try:
+        from parser.job_status import write_status
+
+        write_status(
+            stage="enrich",
+            detail="ЗСК-бот: старт",
+            source="ЗСК-бот",
+            current=0,
+            total=len(candidates),
+        )
+    except Exception:
+        pass
+
+    def _progress(i: int, n: int, inn: str) -> None:
+        print(f"  [ЗСК-бот {i}/{n}] {inn} ...", end=" ", flush=True)
+        if i == 1 or i % 5 == 0 or i == n:
+            try:
+                from parser.job_status import write_status
+
+                write_status(
+                    stage="enrich",
+                    detail="ЗСК-бот",
+                    source="ЗСК-бот",
+                    current=i,
+                    total=n,
+                    key=inn,
+                )
+            except Exception:
+                pass
+
+    async def _run() -> list:
+        client = make_client()
+        await client.connect()
+        try:
+            if not await client.is_user_authorized():
+                raise RuntimeError("not_authorized")
+            return await enrich_zsk_bot_async(
+                candidates,
+                client,
+                pause=pause,
+                on_progress=_progress,
+            )
+        finally:
+            await client.disconnect()
+
+    try:
+        results = asyncio.run(_run())
+    except Exception as e:  # noqa: BLE001
+        print(f"ERR {e}")
+        stats["zsk_bot_err"] = len(candidates)
+        stats["attempted"] = len(candidates)
+        return stats
+
+    for p, report in results:
+        stats["attempted"] += 1
+        updated = apply_zsk_report(p, report)
+        db.save_payload(updated)
+        if report.level in {"green", "yellow", "red"} and not report.error:
+            stats["zsk_bot_ok"] += 1
+            print(f"OK {report.level} ({report.label})")
+        else:
+            stats["zsk_bot_err"] += 1
+            print(f"ERR {report.error or report.level or 'unknown'}")
 
     return stats

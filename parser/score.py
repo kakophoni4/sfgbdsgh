@@ -110,19 +110,56 @@ def score_payload(p: dict[str, Any]) -> dict:
             score += 4
             reasons.append("не на исключении")
 
-    zsk = p.get("zsk_claim") or "unknown"
-    if zsk == "green":
-        score += 12
-        reasons.append("продавец заявляет зелёный ЗСК")
-    elif zsk == "yellow":
-        score -= 8
-        risks.append("жёлтый ЗСК (заявление продавца)")
-    elif zsk == "red":
-        score -= 40
-        risks.append("красный ЗСК — недопустимо по чек-листу")
+    zsk_claim = p.get("zsk_claim") or "unknown"
+    zsk_bot = enrich.get("zsk_bot") or {}
+    zsk_verified = (p.get("zsk_verified") or "").strip()
+    if (
+        zsk_bot.get("level") in {"green", "yellow", "red"}
+        and not zsk_bot.get("error")
+    ):
+        zsk = str(zsk_bot.get("level"))
+        zsk_from_bot = True
+    elif zsk_verified in {"green", "yellow", "red"}:
+        zsk = zsk_verified
+        zsk_from_bot = True
     else:
-        score -= 3
-        risks.append("ЗСК не указан в посте")
+        zsk = zsk_claim
+        zsk_from_bot = False
+
+    if zsk_from_bot:
+        label_b = str(zsk_bot.get("label") or "")
+        if zsk == "green":
+            score += 14
+            reasons.append(
+                "ЗСК бот: низкий риск" + (f" ({label_b})" if label_b else "")
+            )
+        elif zsk == "yellow":
+            score -= 12
+            risks.append(
+                "ЗСК бот: средний риск" + (f" ({label_b})" if label_b else "")
+            )
+        elif zsk == "red":
+            score -= 45
+            risks.append(
+                "ЗСК бот: высокий риск — стоп" + (f" ({label_b})" if label_b else "")
+            )
+        if zsk_claim in {"green", "yellow", "red"} and zsk_claim != zsk:
+            risks.append(
+                f"в посте продавец писал ЗСК={zsk_claim}, бот дал {zsk} — верим боту"
+            )
+    else:
+        if zsk == "green":
+            score += 12
+            reasons.append("продавец заявляет зелёный ЗСК")
+        elif zsk == "yellow":
+            score -= 8
+            risks.append("жёлтый ЗСК (заявление продавца)")
+        elif zsk == "red":
+            score -= 40
+            risks.append("красный ЗСК — недопустимо по чек-листу")
+        else:
+            score -= 3
+            risks.append("ЗСК не проверен ботом и не указан в посте")
 
     reg_year = p.get("reg_year")
     if not reg_year and checklist.get("C_reg_date"):
@@ -828,13 +865,27 @@ def _build_human_verdict(
         paras.append("В выборке лот свежий, раньше почти не светился.")
 
     # ЗСК и прочее из поста
-    zsk = p.get("zsk_claim") or "unknown"
+    zsk_claim = p.get("zsk_claim") or "unknown"
+    zsk_bot = (p.get("enrich") or {}).get("zsk_bot") or {}
+    zsk_v = (p.get("zsk_verified") or zsk_bot.get("level") or "").strip()
     post_bits: list[str] = []
-    if zsk == "green":
-        post_bits.append("продавец пишет про «зелёный» ЗСК")
-    elif zsk == "yellow":
-        post_bits.append("продавец указывает жёлтый ЗСК — осторожнее")
-    elif zsk == "red":
+    if zsk_v in {"green", "yellow", "red"} and not zsk_bot.get("error"):
+        human = {
+            "green": "низкий (зелёный)",
+            "yellow": "средний (жёлтый)",
+            "red": "высокий (красный)",
+        }[zsk_v]
+        lab = str(zsk_bot.get("label") or "")
+        post_bits.append(
+            f"по боту ЗСК: {human}" + (f", «{lab}»" if lab else "")
+        )
+        if zsk_claim in {"green", "yellow", "red"} and zsk_claim != zsk_v:
+            post_bits.append(f"в посте продавец указывал {zsk_claim} — расходится с ботом")
+    elif zsk_claim == "green":
+        post_bits.append("продавец пишет про «зелёный» ЗСК (бот ещё не проверил)")
+    elif zsk_claim == "yellow":
+        post_bits.append("продавец указывает жёлтый ЗСК — осторожнее (бот ещё не проверил)")
+    elif zsk_claim == "red":
         post_bits.append("продавец сам пишет про красный ЗСК — обычно это стоп")
     if p.get("has_account_claim") == "no":
         post_bits.append("в посте сказано, что без расчётного счёта")
