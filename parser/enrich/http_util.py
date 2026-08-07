@@ -4,18 +4,6 @@ from typing import Any
 from urllib.parse import quote, urlparse, urlunparse
 
 
-def _proxy_url() -> str:
-    """Только ENRICH_PROXY — не трогаем системные HTTP_PROXY (иначе БФО/ЕГРЮЛ ломаются)."""
-    try:
-        from config import ENRICH_PROXY
-
-        return (ENRICH_PROXY or "").strip()
-    except Exception:
-        import os
-
-        return os.getenv("ENRICH_PROXY", "").strip()
-
-
 def _normalize_proxy(url: str) -> str:
     """user:pass@host:port или полный URL → http://... с urlencoded user/pass."""
     u = (url or "").strip()
@@ -34,8 +22,45 @@ def _normalize_proxy(url: str) -> str:
     return urlunparse((p.scheme or "http", f"{auth}{host}{port}", "", "", "", ""))
 
 
-def proxy_dict() -> dict[str, str] | None:
-    raw = _normalize_proxy(_proxy_url())
+def _resolve_proxy_url(explicit: str | None, use_proxy: bool) -> str:
+    if not use_proxy:
+        return ""
+    if explicit:
+        return _normalize_proxy(explicit)
+    try:
+        from .proxy_pool import current_proxy, proxy_enabled
+
+        if proxy_enabled():
+            return current_proxy() or ""
+    except Exception:
+        pass
+    try:
+        from config import ENRICH_PROXY
+
+        return _normalize_proxy((ENRICH_PROXY or "").strip())
+    except Exception:
+        import os
+
+        return _normalize_proxy(os.getenv("ENRICH_PROXY", "").strip())
+
+
+def proxy_dict(proxy_url: str | None = None) -> dict[str, str] | None:
+    """Текущий прокси (пул / ENRICH_PROXY). None — прокси не используется."""
+    try:
+        from .proxy_pool import proxy_enabled
+
+        configured = proxy_enabled()
+    except Exception:
+        configured = False
+    if proxy_url is None and not configured:
+        try:
+            from config import ENRICH_PROXY
+
+            if not (ENRICH_PROXY or "").strip():
+                return None
+        except Exception:
+            return None
+    raw = _normalize_proxy(proxy_url) if proxy_url else _resolve_proxy_url(None, True)
     if not raw:
         return None
     return {"http": raw, "https": raw}
@@ -45,10 +70,12 @@ def make_session(
     base_headers: dict[str, str] | None = None,
     *,
     use_proxy: bool = False,
+    proxy_url: str | None = None,
 ):
     """curl_cffi (Chrome) → httpx → requests.
 
-    use_proxy=True — только для Companium/Checko. ЕГРЮЛ/БФО/Федресурс ходят напрямую.
+    use_proxy=True — только для Companium/Checko.
+    proxy_url — конкретный http://ip:port (из пула).
     """
     headers = {
         "User-Agent": (
@@ -62,7 +89,8 @@ def make_session(
     if base_headers:
         headers.update(base_headers)
 
-    proxies = proxy_dict() if use_proxy else None
+    raw = _resolve_proxy_url(proxy_url, use_proxy) if use_proxy else ""
+    proxies = {"http": raw, "https": raw} if raw else None
 
     try:
         from curl_cffi import requests as crequests  # type: ignore
@@ -73,6 +101,7 @@ def make_session(
         s._impersonate = "chrome124"  # type: ignore[attr-defined]
         if proxies:
             s.proxies = proxies  # type: ignore[attr-defined]
+        s._proxy_url = raw  # type: ignore[attr-defined]
         return s
     except Exception:
         pass
@@ -92,6 +121,7 @@ def make_session(
                 if proxies:
                     kwargs["proxy"] = proxies.get("https") or proxies.get("http")
                 self._c = httpx.Client(**kwargs)
+                self._proxy_url = raw
 
             def get(self, url: str, **kwargs: Any):
                 return self._c.get(url, **kwargs)
@@ -108,6 +138,7 @@ def make_session(
         s._engine = "requests"  # type: ignore[attr-defined]
         if proxies:
             s.proxies.update(proxies)
+        s._proxy_url = raw  # type: ignore[attr-defined]
         return s
 
 
@@ -131,3 +162,7 @@ def http_get(
     else:
         kwargs["allow_redirects"] = allow_redirects
     return session.get(url, **kwargs)
+
+
+def session_proxy_url(session) -> str:
+    return str(getattr(session, "_proxy_url", "") or "")

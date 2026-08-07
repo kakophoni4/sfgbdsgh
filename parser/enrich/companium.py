@@ -13,7 +13,15 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from .http_util import http_get, make_session, proxy_dict
+from .http_util import http_get, make_session, proxy_dict, session_proxy_url
+from .proxy_pool import (
+    current_proxy,
+    is_proxy_dead_error,
+    mark_bad,
+    max_tries,
+    proxy_enabled,
+    rotate_proxy,
+)
 
 BASE = "https://companium.ru"
 
@@ -318,26 +326,29 @@ def human_dossier(report: CompaniumReport) -> str:
     return "; ".join(parts) if parts else "данных мало"
 
 
-def _fetch_http(ogrn: str) -> tuple[dict[str, str], str]:
-    """Returns {page_name: html} and error. Прокси — только здесь (Companium)."""
+def _fetch_http_once(ogrn: str, *, proxy_url: str | None) -> tuple[dict[str, str], str]:
+    """Один проход по карточке (опционально через proxy_url)."""
     session = make_session(
         {
             "Accept": "text/html,application/xhtml+xml",
             "Referer": f"{BASE}/",
         },
-        use_proxy=True,
+        use_proxy=bool(proxy_url) or proxy_enabled(),
+        proxy_url=proxy_url,
     )
     pages: dict[str, str] = {}
     main_url = f"{BASE}/id/{ogrn}"
     r = http_get(session, main_url, timeout=35)
     code = getattr(r, "status_code", 0)
     html = r.text if hasattr(r, "text") else ""
+    pages["_proxy"] = session_proxy_url(session) or (proxy_url or "")
     if code == 404:
-        return {}, "not_found"
+        return pages, "not_found"
     if code == 429 or _has_captcha(html):
-        return {"main": html or ""}, "recaptcha_v2"
+        pages["main"] = html or ""
+        return pages, "recaptcha_v2"
     if code >= 400:
-        return {}, f"http_{code}"
+        return pages, f"http_{code}"
     pages["main"] = html or ""
     for tab in ("legal-cases", "enforcements", "fedresurs"):
         try:
@@ -348,6 +359,44 @@ def _fetch_http(ogrn: str) -> tuple[dict[str, str], str]:
             pages[tab] = ""
             pages[f"{tab}_err"] = str(e)
     return pages, ""
+
+
+def _fetch_http(ogrn: str) -> tuple[dict[str, str], str]:
+    """Карточка Companium; при мёртвом прокси/капче — следующий из пула."""
+    tries = max_tries() if proxy_enabled() else 1
+    last_err = "proxy_exhausted"
+    for attempt in range(tries):
+        proxy = current_proxy() if proxy_enabled() else None
+        try:
+            pages, err = _fetch_http_once(ogrn, proxy_url=proxy)
+        except Exception as e:  # noqa: BLE001
+            if proxy_enabled() and is_proxy_dead_error(e):
+                mark_bad(proxy, reason=str(e))
+                rotate_proxy()
+                last_err = f"proxy_dead:{e}"
+                continue
+            return {}, str(e)
+
+        used = pages.pop("_proxy", proxy or "")
+        if err in {"recaptcha_v2", "captcha"} or err == "http_429":
+            if proxy_enabled():
+                mark_bad(used or proxy, reason=err)
+                rotate_proxy()
+                last_err = err
+                continue
+            return pages, err
+        if err.startswith("http_") and proxy_enabled() and attempt + 1 < tries:
+            mark_bad(used or proxy, reason=err)
+            rotate_proxy()
+            last_err = err
+            continue
+        return pages, err
+    short = last_err
+    if "407" in short:
+        short = "proxy_407_whitelist?"
+    elif len(short) > 120:
+        short = short[:120]
+    return {}, short
 
 
 def _fetch_playwright(ogrn: str) -> tuple[dict[str, str], str]:

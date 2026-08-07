@@ -11,7 +11,15 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from .http_util import http_get, make_session
+from .http_util import http_get, make_session, session_proxy_url
+from .proxy_pool import (
+    current_proxy,
+    is_proxy_dead_error,
+    mark_bad,
+    max_tries,
+    proxy_enabled,
+    rotate_proxy,
+)
 
 BASE = "https://checko.ru"
 
@@ -108,29 +116,59 @@ def fetch_checko(*, ogrn: str = "", inn: str = "") -> CheckoReport:
 
     url = f"{BASE}/company/{ogrn}"
     report = CheckoReport(inn=inn, ogrn=ogrn, url=url)
-    session = make_session(
-        {
-            "Accept": "text/html,application/xhtml+xml",
-            "Referer": f"{BASE}/",
-        },
-        use_proxy=True,
-    )
-    try:
-        r = http_get(session, url, timeout=35)
+    tries = max_tries() if proxy_enabled() else 1
+    last_err = "proxy_exhausted"
+    for _attempt in range(tries):
+        proxy = current_proxy() if proxy_enabled() else None
+        session = make_session(
+            {
+                "Accept": "text/html,application/xhtml+xml",
+                "Referer": f"{BASE}/",
+            },
+            use_proxy=bool(proxy) or proxy_enabled(),
+            proxy_url=proxy,
+        )
+        try:
+            r = http_get(session, url, timeout=35)
+        except Exception as e:  # noqa: BLE001
+            if proxy_enabled() and is_proxy_dead_error(e):
+                mark_bad(proxy or session_proxy_url(session), reason=str(e))
+                rotate_proxy()
+                last_err = str(e)
+                continue
+            report.error = str(e)
+            return report
+
         code = getattr(r, "status_code", 0)
         html = r.text if hasattr(r, "text") else ""
+        used = session_proxy_url(session) or proxy
         if code == 429 or "captcha_required" in (html or "").lower():
+            if proxy_enabled():
+                mark_bad(used, reason="captcha_429")
+                rotate_proxy()
+                last_err = "captcha_429"
+                continue
             report.error = "captcha_429"
             return report
         if code == 404:
             report.error = "not_found"
             return report
         if code >= 400:
+            if proxy_enabled():
+                mark_bad(used, reason=f"http_{code}")
+                rotate_proxy()
+                last_err = f"http_{code}"
+                continue
             report.error = f"http_{code}"
             return report
         if "подтвердите, что вы человек" in (html or "").lower() or "g-recaptcha" in (
             html or ""
         ).lower():
+            if proxy_enabled():
+                mark_bad(used, reason="recaptcha_v2")
+                rotate_proxy()
+                last_err = "recaptcha_v2"
+                continue
             report.error = "recaptcha_v2"
             return report
         _parse(html or "", report)
@@ -141,9 +179,8 @@ def fetch_checko(*, ogrn: str = "", inn: str = "") -> CheckoReport:
         ):
             report.error = "parse_empty"
         return report
-    except Exception as e:  # noqa: BLE001
-        report.error = str(e)
-        return report
+    report.error = last_err
+    return report
 
 
 def checklist_from_checko(report: CheckoReport) -> dict[str, Any]:

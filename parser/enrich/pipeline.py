@@ -451,17 +451,19 @@ def _run_source(
         print(prefix, summary(updated))
         db.save_payload(updated)
 
-        # Companium/Checko: 3 капчи подряд → стоп источника (не жечь весь батч)
+        # Companium/Checko: 3 капчи/прокси-фейла подряд → стоп источника
         if apply in (apply_companium, apply_checko) and (
             "recaptcha" in err.lower()
             or "captcha" in err.lower()
-            or err in {"429", "http_429"}
+            or "proxy" in err.lower()
+            or "407" in err
+            or err in {"429", "http_429", "proxy_exhausted"}
         ):
             captcha_streak += 1
             if captcha_streak >= 3:
                 print(
-                    f"  → {name}: капча {captcha_streak}× подряд — стоп. "
-                    "Смените session-… в ENRICH_PROXY и повторите."
+                    f"  → {name}: капча/прокси {captcha_streak}× подряд — стоп. "
+                    "Проверьте whitelist IP или ENRICH_PROXY_LIST_URL."
                 )
                 break
         else:
@@ -519,6 +521,14 @@ def enrich_db(
         f"Паузы: base={pause}s + jitter=0..{ENRICH_JITTER}s "
         f"(~{pause:.0f}–{pause + ENRICH_JITTER:.0f}s между запросами)"
     )
+    try:
+        from parser.enrich.proxy_pool import ensure_loaded, proxy_enabled
+
+        if proxy_enabled():
+            n = ensure_loaded()
+            print(f"Прокси-пул (Companium/Checko): {n} шт из списка/кэша")
+    except Exception as e:  # noqa: BLE001
+        print(f"Прокси-пул: не загрузился ({e})")
 
     try:
         if "egrul" in sources:
