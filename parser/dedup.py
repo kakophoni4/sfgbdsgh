@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+from collections import defaultdict
+from datetime import datetime
 from typing import Any
 
 
@@ -29,11 +31,48 @@ def _dedupe_key(p: dict[str, Any]) -> str:
     return f"msg:{p.get('chat_id')}:{p.get('message_id')}:{p.get('block_index')}"
 
 
+def _parse_dt(raw: str) -> datetime | None:
+    s = (raw or "").strip()
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def annotate_listing_history(payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Сколько раз лот светился в чате и как давно продают (по msg_date)."""
+    by_key: dict[str, list[str]] = defaultdict(list)
+    for p in payloads:
+        by_key[_dedupe_key(p)].append(p.get("msg_date") or "")
+
+    out: list[dict[str, Any]] = []
+    for p in payloads:
+        q = dict(p)
+        key = _dedupe_key(p)
+        dates_raw = [d for d in by_key.get(key, []) if d]
+        parsed = sorted(d for d in (_parse_dt(x) for x in dates_raw) if d is not None)
+        q["listing_count"] = max(1, len(by_key.get(key, []) or [1]))
+        if parsed:
+            first, last = parsed[0], parsed[-1]
+            q["listing_first_seen"] = first.isoformat()
+            q["listing_last_seen"] = last.isoformat()
+            q["listing_days"] = max(0, (last - first).days)
+        else:
+            q["listing_first_seen"] = ""
+            q["listing_last_seen"] = ""
+            q["listing_days"] = 0
+        out.append(q)
+    return out
+
+
 def mark_duplicates(payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
     Оставляет лучший лот в группе (выше score, свежее сообщение).
     Остальным ставит is_duplicate=True.
     """
+    payloads = annotate_listing_history(payloads)
     best_idx: dict[str, int] = {}
     scores: list[tuple[int, str, int]] = []
     for i, p in enumerate(payloads):

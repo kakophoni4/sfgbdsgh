@@ -149,7 +149,8 @@ def score_payload(p: dict[str, Any]) -> dict:
     zero = bool(p.get("zero_turnover_claim"))
     revenues = buh_revs or tg_revs
 
-    if buh_cl.get("R_turnover") == "ЕСТЬ" or turn_buh >= 500_000:
+    r_raw = str(buh_cl.get("R_turnover") or "")
+    if turn_buh >= 500_000 or r_raw.startswith("есть") or r_raw == "ЕСТЬ":
         score += 14
         reasons.append(
             f"обороты по БФО ≥ 500к (макс ~{(turn_buh or turn):,} ₽)".replace(",", " ")
@@ -161,9 +162,12 @@ def score_payload(p: dict[str, Any]) -> dict:
         elif price and turn > 0 and price / turn >= 1.0:
             score -= 10
             risks.append("цена высокая относительно оборотов БФО")
-    elif buh_cl.get("R_turnover") == "НЕТ":
+    elif r_raw.startswith("мало") or r_raw in {"НЕТ", "отчётность есть, выручка не указана"}:
         score -= 6
-        risks.append("по БФО обороты ≤ 500к / нули")
+        risks.append("по БФО обороты ≤ 500к / выручка не указана")
+    elif r_raw.startswith("нет данных"):
+        score -= 3
+        risks.append("карточки БФО нет")
     elif zero and turn < 500_000:
         score -= 6
         risks.append("без оборотов / нулёвка (заявление)")
@@ -277,6 +281,22 @@ def score_payload(p: dict[str, Any]) -> dict:
         score += 3
         reasons.append("обещают первичку/1С")
 
+    # Как давно / как часто продают в чате
+    listing_days = int(p.get("listing_days") or 0)
+    listing_count = int(p.get("listing_count") or 1)
+    if listing_count >= 4 or listing_days >= 45:
+        score -= 8
+        risks.append(
+            f"долго в продаже: {listing_count} объявл., ~{listing_days} дн. в чате"
+        )
+    elif listing_count >= 2 or listing_days >= 14:
+        score -= 3
+        risks.append(
+            f"повторяется в чате: {listing_count} объявл., ~{listing_days} дн."
+        )
+    elif listing_count == 1 and listing_days == 0:
+        reasons.append("свежее объявление (один раз в выборке)")
+
     price = p.get("price_rub")
     if price:
         if price < 20_000:
@@ -331,12 +351,19 @@ def score_payload(p: dict[str, Any]) -> dict:
     if not inn:
         confidence = "low"
 
-    summary_parts = []
-    if reasons:
-        summary_parts.append("Плюсы: " + "; ".join(reasons[:5]))
-    if risks:
-        summary_parts.append("Риски: " + "; ".join(risks[:5]))
-    summary = " | ".join(summary_parts) if summary_parts else "мало данных"
+    summary = _build_human_verdict(
+        verdict=verdict,
+        label=label,
+        score=score,
+        confidence=confidence,
+        reasons=reasons,
+        risks=risks,
+        p=p,
+        checklist=checklist,
+        turn=turn,
+        listing_days=listing_days,
+        listing_count=listing_count,
+    )
 
     return {
         "score": score,
@@ -345,7 +372,7 @@ def score_payload(p: dict[str, Any]) -> dict:
         "confidence": confidence,
         "reasons": reasons,
         "risks": risks,
-        "summary": f"{verdict} ({label}, {score}/100, conf={confidence}). {summary}",
+        "summary": summary,
         "turnover_recent": turn,
         "reg_before_2024": "ДА"
         if reg_year and reg_year < 2024
@@ -353,9 +380,13 @@ def score_payload(p: dict[str, Any]) -> dict:
         "has_turnover_flag": (
             buh_cl.get("R_turnover")
             or (
-                "ЕСТЬ"
+                f"есть, макс ~{turn:,} ₽".replace(",", " ")
                 if turn >= 500_000
-                else ("НЕТ" if revenues or zero else "")
+                else (
+                    f"мало, макс ~{turn:,} ₽".replace(",", " ")
+                    if revenues or zero
+                    else "нет данных"
+                )
             )
         ),
         "egrul_verified": verified,
@@ -364,3 +395,85 @@ def score_payload(p: dict[str, Any]) -> dict:
             and not (p.get("enrich") or {}).get("buh", {}).get("error")
         ),
     }
+
+
+def _build_human_verdict(
+    *,
+    verdict: str,
+    label: str,
+    score: int,
+    confidence: str,
+    reasons: list[str],
+    risks: list[str],
+    p: dict[str, Any],
+    checklist: dict[str, Any],
+    turn: int,
+    listing_days: int,
+    listing_count: int,
+) -> str:
+    """Итог для Excel: стоит ли смотреть компанию — по всем факторам."""
+    if verdict == "ДА":
+        head = f"СТОИТ СМОТРЕТЬ ({score}/100)"
+    elif verdict == "СОМНИТЕЛЬНО":
+        head = f"НА ПРОВЕРКУ ({score}/100) — не брать вслепую"
+    else:
+        head = f"ЛУЧШЕ НЕ БРАТЬ ({score}/100)"
+
+    bits: list[str] = [head, f"оценка: {label}; уверенность: {confidence}"]
+
+    name = (p.get("name") or checklist.get("B_name") or "").strip()
+    price = p.get("price_rub")
+    if name:
+        bits.append(f"лот: {name}")
+    if price:
+        bits.append(f"цена объявления: {price:,} ₽".replace(",", " "))
+
+    # реестр коротко
+    reg_bits = []
+    for key, title in (
+        ("P_court_cases", "суды"),
+        ("L_debts_il", "долги"),
+        ("O_clean", "банкротство"),
+        ("I_reliable", "недостоверки"),
+        ("V_leases", "федресурс"),
+        ("U_reports_filed", "отчётность"),
+    ):
+        v = checklist.get(key)
+        if v:
+            reg_bits.append(f"{title}: {v}")
+    if reg_bits:
+        bits.append("реестры: " + "; ".join(reg_bits[:6]))
+
+    if turn:
+        bits.append(f"обороты (оценка): ~{turn:,} ₽".replace(",", " "))
+    elif checklist.get("R_turnover"):
+        bits.append(f"обороты: {checklist.get('R_turnover')}")
+
+    if listing_count > 1 or listing_days > 0:
+        bits.append(
+            f"в чате продают: {listing_count} раз, охват ~{listing_days} дн."
+            + (
+                f" (с {(p.get('listing_first_seen') or '')[:10]})"
+                if p.get("listing_first_seen")
+                else ""
+            )
+        )
+
+    dossier = (checklist.get("dossier") or "").strip()
+    if dossier:
+        bits.append("карточка: " + dossier[:220] + ("…" if len(dossier) > 220 else ""))
+
+    if reasons:
+        bits.append("плюсы: " + "; ".join(reasons[:6]))
+    if risks:
+        bits.append("риски: " + "; ".join(risks[:6]))
+
+    conf_note = {
+        "high": "данных достаточно для первичного отбора",
+        "medium": "есть пробелы — сверь вручную по ссылкам",
+        "low": "мало данных — только как черновик",
+    }.get(confidence, "")
+    if conf_note:
+        bits.append(conf_note)
+
+    return " — ".join(bits)

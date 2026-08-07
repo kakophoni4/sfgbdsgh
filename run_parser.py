@@ -68,17 +68,18 @@ def selftest() -> None:
         )
     )
     assert cl_o["O_clean"] == "есть банкротство"
-    assert cl_o["V_leases"] == "ПРОВЕРИТЬ"
+    assert "V_leases" not in cl_o  # 451/blocked — не затираем V агрегаторов
     cl_ok = checklist_from_fedresurs(
         FedresursReport(inn="1", status="Действующее", is_bankrupt=False, lease_hits=0)
     )
     assert cl_ok["O_clean"] == "нет банкротства"
+    assert cl_ok["V_leases"] == "нет лизинга/залогов"
 
     from parser.enrich.companium import CompaniumReport, checklist_from_companium
 
     cl_c = checklist_from_companium(
         CompaniumReport(
-            ogrn="1",
+            ogrn="1234567890123",
             court_cases=0,
             enforcements=0,
             unreliable=False,
@@ -88,6 +89,18 @@ def selftest() -> None:
     assert cl_c["P_court_cases"] == "нет дел"
     assert cl_c["L_debts_il"] == "нет долгов/ИЛ"
     assert cl_c["I_reliable"] == "ДА"
+    assert cl_c["V_leases"] == "нет лизинга/залогов"
+    cl_c2 = checklist_from_companium(
+        CompaniumReport(
+            ogrn="1234567890123",
+            court_cases=1,
+            enforcements=0,
+            unreliable=False,
+            fedresurs_msgs=4,
+        )
+    )
+    assert cl_c2["V_leases"] == "есть записи"
+    assert "fedresurs" in (cl_c2.get("V_link") or "")
     print("companium checklist OK")
 
     cl_i = checklist_from_unreliable(

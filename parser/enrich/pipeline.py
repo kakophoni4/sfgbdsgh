@@ -360,9 +360,12 @@ def apply_unreliable(payload: dict[str, Any], pause: float = 0.0) -> dict[str, A
 
 
 def rescore_db(db: ListingDB) -> dict[str, int]:
-    """Пересчёт M/N/I/status, подписи O/L/P/V и score по уже сохранённым enrich (без сети)."""
+    """Пересчёт M/N/I/status, подписи O/L/P/V, история продажи и полный вердикт."""
+    from parser.dedup import annotate_listing_history
+
     fixed = 0
-    for p in db.all_payloads():
+    payloads = annotate_listing_history(db.all_payloads())
+    for p in payloads:
         enrich = p.get("enrich") or {}
         egrul = enrich.get("egrul") or {}
         cl = _remap_checklist_labels(dict(enrich.get("checklist") or {}))
@@ -376,16 +379,12 @@ def rescore_db(db: ListingDB) -> dict[str, int]:
                 egrul = dict(egrul)
                 egrul["status"] = "действующая"
             p = _merge_enrich(p, egrul=egrul, checklist=cl)
-            fixed += 1
         else:
-            if cl != (enrich.get("checklist") or {}):
-                p = _merge_enrich(p, checklist=cl)
-            else:
-                p["scoring"] = score_payload(p)
-            if cl.get("O_clean") or cl.get("L_debts_il") or cl.get("P_court_cases"):
-                fixed += 1
+            p = _merge_enrich(p, checklist=cl) if cl else p
+            p["scoring"] = score_payload(p)
+        fixed += 1
         db.save_payload(p)
-    return {"rescored": fixed, "total": len(db.all_payloads())}
+    return {"rescored": fixed, "total": len(payloads)}
 
 
 def _run_source(

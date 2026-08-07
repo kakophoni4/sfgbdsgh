@@ -206,13 +206,18 @@ def checklist_from_buh(report: BuhReport) -> dict[str, Any]:
     max_rev = max((v for _, v in recent), default=None)
 
     if max_rev is None and not report.years:
-        r_flag = "НЕТ"
+        r_flag = "нет данных в БФО"
         u_flag = "НЕТ"
     elif max_rev is None:
-        r_flag = ""
+        # отчётность есть, выручка в формах пустая (часто нулёвка)
+        r_flag = "отчётность есть, выручка не указана"
         u_flag = "ДА"
     else:
-        r_flag = "ЕСТЬ" if max_rev > 500_000 else "НЕТ"
+        r_flag = (
+            f"есть, макс ~{max_rev:,} ₽".replace(",", " ")
+            if max_rev > 500_000
+            else f"мало, макс ~{max_rev:,} ₽".replace(",", " ")
+        )
         u_flag = "ДА"
 
     k_parts: list[str] = []

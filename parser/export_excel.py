@@ -32,7 +32,7 @@ HEADERS = [
     "Отчётность сдана",
     "Лизинг / залоги",
     "Дата проверки",
-    "Итог / скоринг",
+    "Итог: брать или нет",
     "Ссылка на объявление",
     "Продавец",
     "Балл",
@@ -41,7 +41,7 @@ HEADERS = [
     "Уверенность",
     "Статус в ЕГРЮЛ",
     "Дубликат",
-    "Сводка (Companium)",
+    "Карточка Companium",
     "Сотрудники",
     "МСП",
     "Санкции",
@@ -69,7 +69,27 @@ def _zsk_cell(claim: str) -> str:
         "green": "зелёный (заявление продавца)",
         "yellow": "жёлтый (заявление продавца)",
         "red": "красный (заявление продавца)",
-    }.get(claim, "")
+        "unknown": "не указан в посте",
+        "": "не указан в посте",
+    }.get(claim or "unknown", "не указан в посте")
+
+
+def _r_cell(checklist: dict[str, Any], scoring: dict[str, Any], p: dict[str, Any]) -> str:
+    r = checklist.get("R_turnover") or scoring.get("has_turnover_flag") or ""
+    if r == "ЕСТЬ":
+        return "есть обороты >500 тыс."
+    if r == "НЕТ":
+        return "обороты ≤500 тыс. / мало"
+    if r:
+        return str(r)
+    u = str(checklist.get("U_reports_filed") or "")
+    if u in {"ДА", "сдана"}:
+        return "отчётность есть, выручка не указана"
+    if p.get("zero_turnover_claim"):
+        return "продавец: без оборотов / нулёвка"
+    if p.get("revenues"):
+        return "есть цифры в тексте объявления"
+    return "нет данных (БФО пусто / не найдено)"
 
 
 def _price_cell(price: int | None) -> str | int:
@@ -202,14 +222,14 @@ def row_from_payload(p: dict[str, Any]) -> list[Any]:
         _human_flag("N_not_excluding", checklist.get("N_not_excluding")),
         checklist.get("O_clean") or "",
         checklist.get("P_court_cases") or "",
-        q_hint,
-        checklist.get("R_turnover") or scoring.get("has_turnover_flag") or "",
+        q_hint or "не сказано в посте",
+        _r_cell(checklist, scoring, p),
         _zsk_cell(p.get("zsk_claim") or ""),
-        t_hint,
-        _human_flag("U_reports_filed", checklist.get("U_reports_filed")),
-        _v_cell(checklist),
+        t_hint or "не сказано в посте",
+        _human_flag("U_reports_filed", checklist.get("U_reports_filed")) or "нет данных",
+        _v_cell(checklist) or "нет данных",
         enrich.get("checked_at") or p.get("msg_date") or "",
-        scoring.get("summary") or "",
+        scoring.get("summary") or "нет оценки — запустите --rescore",
         p.get("link") or "",
         p.get("seller_username") or p.get("seller_from_msg") or "",
         scoring.get("score") or "",
