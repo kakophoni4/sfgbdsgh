@@ -29,11 +29,13 @@ $action = New-ScheduledTaskAction `
     -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$script`"" `
     -WorkingDirectory $Root
 
+# TimeSpan.MaxValue is rejected by Task Scheduler (HRESULT 0x80041318).
+# ~27 years is enough and stays in valid range.
 $triggerRepeat = New-ScheduledTaskTrigger `
     -Once `
     -At (Get-Date).AddMinutes(1) `
     -RepetitionInterval (New-TimeSpan -Minutes $EveryMinutes) `
-    -RepetitionDuration ([TimeSpan]::MaxValue)
+    -RepetitionDuration (New-TimeSpan -Days 9999)
 $triggerBoot = New-ScheduledTaskTrigger -AtStartup
 $triggers = @($triggerRepeat, $triggerBoot)
 
@@ -52,6 +54,7 @@ $principal = New-ScheduledTaskPrincipal `
 
 $desc = "Firm parser: TG -> enrich(no limit) -> Excel/Sheets. Skip if running."
 
+$registered = $false
 try {
     Register-ScheduledTask `
         -TaskName $taskName `
@@ -61,7 +64,11 @@ try {
         -Principal $principal `
         -Description $desc `
         -Force | Out-Null
+    $registered = $true
+    Write-Host "Registered with Highest privileges."
 } catch {
+    Write-Host ("Highest failed: " + $_.Exception.Message)
+    Write-Host "Retry without Highest..."
     Register-ScheduledTask `
         -TaskName $taskName `
         -Action $action `
@@ -69,14 +76,25 @@ try {
         -Settings $settings `
         -Description $desc `
         -Force | Out-Null
+    $registered = $true
 }
 
-Write-Host "OK: task '$taskName' every $EveryMinutes min + at Windows startup."
-Write-Host "  MultipleInstances=IgnoreNew (second instance will not start)."
-Write-Host "  Execution time limit: 8 hours."
-Write-Host "Check:  Get-ScheduledTask -TaskName $taskName | Format-List *"
-Write-Host "Start:  Start-ScheduledTask -TaskName $taskName"
-Write-Host "Stop:   Stop-ScheduledTask -TaskName $taskName"
-Write-Host "Remove: Unregister-ScheduledTask -TaskName $taskName -Confirm:`$false"
-Write-Host "Logs:   $Root\data\logs\"
-Write-Host "Status: powershell -ExecutionPolicy Bypass -File $Root\deploy\show_status.ps1"
+if (-not $registered) { throw "Failed to register task $taskName" }
+
+$task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
+$info = Get-ScheduledTaskInfo -TaskName $taskName
+Write-Host ""
+Write-Host "OK: task '$taskName' is ACTIVE."
+Write-Host ("  State:     " + $task.State)
+Write-Host ("  Every:     " + $EveryMinutes + " min (+ at Windows startup)")
+Write-Host ("  Action:    " + $script)
+Write-Host ("  Next run:  " + $info.NextRunTime)
+Write-Host ("  Last run:  " + $info.LastRunTime)
+Write-Host ("  Last code: " + $info.LastTaskResult)
+Write-Host ""
+Write-Host "Manual start now:"
+Write-Host "  Start-ScheduledTask -TaskName $taskName"
+Write-Host "Watch progress:"
+Write-Host "  powershell -ExecutionPolicy Bypass -File $Root\deploy\show_status.ps1"
+Write-Host "Logs:"
+Write-Host "  $Root\data\logs\"
