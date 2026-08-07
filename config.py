@@ -30,8 +30,8 @@ ENRICH_PAUSE = float(os.getenv("ENRICH_PAUSE", "2.5"))
 ENRICH_JITTER = float(os.getenv("ENRICH_JITTER", "1.0"))
 # лимит лотов за один прогон enrich
 ENRICH_LIMIT = int(os.getenv("ENRICH_LIMIT", "40"))
-# HTTP(S) прокси только для Companium/Checko: http://user:pass@host:port
-# ЕГРЮЛ/БФО/Федресурс идут напрямую (прокси часто режет nalog.gov.ru → 403).
+# HTTP(S) прокси ТОЛЬКО для Companium/Checko (БФО/ЕГРЮЛ/Федресурс — напрямую).
+# Пример: http://user:pass@host:443
 ENRICH_PROXY = os.getenv("ENRICH_PROXY", "").strip()
 
 # Официальный Desktop API (как в telegram_login.py)

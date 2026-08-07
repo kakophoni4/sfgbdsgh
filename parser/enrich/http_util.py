@@ -5,7 +5,7 @@ from urllib.parse import quote, urlparse, urlunparse
 
 
 def _proxy_url() -> str:
-    """Только ENRICH_PROXY — не подхватываем системный HTTP_PROXY на все сайты."""
+    """Только ENRICH_PROXY — не трогаем системные HTTP_PROXY (иначе БФО/ЕГРЮЛ ломаются)."""
     try:
         from config import ENRICH_PROXY
 
@@ -41,25 +41,6 @@ def proxy_dict() -> dict[str, str] | None:
     return {"http": raw, "https": raw}
 
 
-def proxy_playwright() -> dict[str, str] | None:
-    """Настройки прокси для Playwright (Companium browser fallback)."""
-    raw = _proxy_url()
-    if not raw:
-        return None
-    if "://" not in raw:
-        raw = "http://" + raw
-    p = urlparse(raw)
-    if not p.hostname:
-        return None
-    server = f"{p.scheme or 'http'}://{p.hostname}" + (f":{p.port}" if p.port else "")
-    out: dict[str, str] = {"server": server}
-    if p.username:
-        out["username"] = p.username
-    if p.password:
-        out["password"] = p.password
-    return out
-
-
 def make_session(
     base_headers: dict[str, str] | None = None,
     *,
@@ -67,8 +48,7 @@ def make_session(
 ):
     """curl_cffi (Chrome) → httpx → requests.
 
-    use_proxy=True — только для Companium/Checko (ENRICH_PROXY).
-    Остальные источники ходят напрямую.
+    use_proxy=True — только для Companium/Checko. ЕГРЮЛ/БФО/Федресурс ходят напрямую.
     """
     headers = {
         "User-Agent": (

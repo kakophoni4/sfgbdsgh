@@ -13,7 +13,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from .http_util import http_get, make_session, proxy_playwright
+from .http_util import http_get, make_session, proxy_dict
 
 BASE = "https://companium.ru"
 
@@ -319,7 +319,7 @@ def human_dossier(report: CompaniumReport) -> str:
 
 
 def _fetch_http(ogrn: str) -> tuple[dict[str, str], str]:
-    """Returns {page_name: html} and error."""
+    """Returns {page_name: html} and error. Прокси — только здесь (Companium)."""
     session = make_session(
         {
             "Accept": "text/html,application/xhtml+xml",
@@ -363,11 +363,7 @@ def _fetch_playwright(ogrn: str) -> tuple[dict[str, str], str]:
                 headless=True,
                 args=["--disable-blink-features=AutomationControlled"],
             )
-            ctx_kwargs: dict[str, Any] = {"locale": "ru-RU"}
-            pw_proxy = proxy_playwright()
-            if pw_proxy:
-                ctx_kwargs["proxy"] = pw_proxy
-            context = browser.new_context(**ctx_kwargs)
+            context = browser.new_context(locale="ru-RU")
             page = context.new_page()
             url = f"{BASE}/id/{ogrn}"
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
@@ -450,7 +446,11 @@ def fetch_companium(*, ogrn: str = "", inn: str = "") -> CompaniumReport:
 
     pages, err = _fetch_http(ogrn)
     report.source = "http"
-    if err in {"recaptcha_v2", "captcha"} or (err == "" and not pages.get("main")):
+    # Playwright только без прокси: с ENRICH_PROXY HTTP уже с другого IP;
+    # Sync Playwright внутри asyncio (Telethon) падает — не вызываем.
+    if not proxy_dict() and (
+        err in {"recaptcha_v2", "captcha"} or (err == "" and not pages.get("main"))
+    ):
         pages, err = _fetch_playwright(ogrn)
         report.source = "playwright"
 
