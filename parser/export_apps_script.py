@@ -19,7 +19,7 @@ from parser.export_excel import (
     _zsk_cell,
 )
 
-EXPORT_VERSION = "v4-row-colors"
+EXPORT_VERSION = "v4-row-colors-score"
 
 # Компактная шапка для онлайн-таблицы (без сырого текста и ручных пустышек)
 SHEET_HEADERS = [
@@ -193,7 +193,8 @@ def sheet_row(p: dict[str, Any]) -> list[Any]:
         v_txt,
         _zsk_cell(p.get("zsk_claim") or ""),
         _short_verdict(p),
-        sc.get("score") or "",
+        # строка, иначе Sheets воспринимает 91 как дату 1900-04-01
+        "" if sc.get("score") in (None, "") else str(int(sc.get("score"))),
         (p.get("listing_first_seen") or p.get("msg_date") or "")[:10],
         _flat(p.get("seller_username") or p.get("seller_from_msg") or "", 40),
         p.get("link") or "",

@@ -7,7 +7,7 @@
  */
 
 var EXPECTED_TOKEN = "";
-var VERSION = "v4-row-colors";
+var VERSION = "v4-row-colors-score";
 
 function doPost(e) {
   try {
@@ -70,12 +70,32 @@ function doPost(e) {
         }
       }
 
+      // Балл — всегда текст (число 1..100 Sheets иначе рисует как дату 1900-xx)
+      var scoreCol = _headerIndex(headers, "Балл");
+      if (scoreCol < 0) scoreCol = 16;
+      if (scoreCol >= 1 && scoreCol <= cols) {
+        for (var sr = 1; sr < all.length; sr++) {
+          var sv = all[sr][scoreCol - 1];
+          if (sv !== "" && sv !== null && sv !== undefined) {
+            all[sr][scoreCol - 1] = String(sv);
+          }
+        }
+      }
+
       var range = sh.getRange(1, 1, all.length, cols);
       range.setValues(all);
       range.setFontFamily("Arial");
       range.setFontSize(10);
       range.setVerticalAlignment("middle");
       range.setWrap(false);
+      if (scoreCol >= 1 && scoreCol <= cols && all.length >= 2) {
+        sh.getRange(2, scoreCol, all.length, scoreCol).setNumberFormat("@");
+      }
+      // Цена — обычное число, не дата
+      var priceCol = _headerIndex(headers, "Цена");
+      if (priceCol >= 1 && priceCol <= cols && all.length >= 2) {
+        sh.getRange(2, priceCol, all.length, priceCol).setNumberFormat("#,##0");
+      }
 
       // шапка
       var head = sh.getRange(1, 1, 1, cols);
@@ -224,6 +244,13 @@ function _setWidths(sh, cols) {
       sh.setRowHeights(2, last - 1, 48);
     }
   }
+}
+
+function _headerIndex(headers, title) {
+  for (var i = 0; i < headers.length; i++) {
+    if (String(headers[i] || "") === title) return i + 1; // 1-based
+  }
+  return -1;
 }
 
 /**
