@@ -1,12 +1,13 @@
 # Регистрация автозапуска (от Администратора).
+# Пока идёт старый прогон — новый SKIP (IgnoreNew + mutex в run_job.ps1).
 #
 #   powershell -ExecutionPolicy Bypass -File deploy\register_task.ps1
+#   powershell -ExecutionPolicy Bypass -File deploy\register_task.ps1 -EveryMinutes 5
 #   powershell -ExecutionPolicy Bypass -File deploy\register_task.ps1 -EveryMinutes 30
-#   powershell -ExecutionPolicy Bypass -File deploy\register_task.ps1 -EveryMinutes 60
 
 param(
-    [ValidateSet(15, 30, 60)]
-    [int]$EveryMinutes = 30
+    [ValidateSet(5, 10, 15, 30, 60)]
+    [int]$EveryMinutes = 5
 )
 
 $ErrorActionPreference = "Stop"
