@@ -9,6 +9,15 @@ $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 if (Test-Path "C:\firmy\run_parser.py") { $Root = "C:\firmy" }
 Set-Location $Root
 
+# UTF-8: иначе русский из Python в логе превращается в ╨б╨║╨░...
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+try { chcp 65001 > $null } catch {}
+try {
+    [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+} catch {}
+
 $py = Join-Path $Root ".venv\Scripts\python.exe"
 if (-not (Test-Path $py)) { $py = "python" }
 
@@ -23,6 +32,22 @@ function Write-Log([string]$msg) {
     $line = "[{0}] {1}" -f (Get-Date -Format "HH:mm:ss"), $msg
     Write-Host $line
     Add-Content -Path $log -Value $line -Encoding UTF8
+}
+
+function Invoke-PyLogged {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$PyArgs,
+        [string[]]$ExtraLogs = @()
+    )
+    & $py @PyArgs 2>&1 | ForEach-Object {
+        $line = "$_"
+        Write-Host $line
+        Add-Content -Path $log -Value $line -Encoding UTF8
+        foreach ($el in $ExtraLogs) {
+            if ($el) { Add-Content -Path $el -Value $line -Encoding UTF8 }
+        }
+    }
+    return $LASTEXITCODE
 }
 
 function Set-JobStatus([string]$stage, [string]$detail = "") {
@@ -94,23 +119,21 @@ try {
 
     Set-JobStatus "scrape" "Telegram last 2 days"
     Write-Log "==> scrape Telegram (2d)"
-    & $py run_parser.py --since-days 2 --limit 5000 *>&1 | Tee-Object -FilePath $log -Append
-    if ($LASTEXITCODE -ne 0) { $code = $LASTEXITCODE }
+    $ec = Invoke-PyLogged -PyArgs @("run_parser.py", "--since-days", "2", "--limit", "5000")
+    if ($ec -ne 0) { $code = $ec }
 
     $maxRounds = 20
     for ($i = 1; $i -le $maxRounds; $i++) {
         Set-JobStatus "enrich" ("round $i/$maxRounds unique INNs, limit=0")
         Write-Log ("==> enrich-core round {0}/{1} (unique, no limit)" -f $i, $maxRounds)
         $enrichLog = Join-Path $logDir ("enrich_{0}_r{1}.log" -f $stamp, $i)
-        & $py run_parser.py --enrich-only --enrich-core --enrich-limit 0 *>&1 |
-            Tee-Object -FilePath $log -Append |
-            Tee-Object -FilePath $enrichLog
-        if ($LASTEXITCODE -ne 0) {
-            $code = $LASTEXITCODE
-            Write-Log "enrich exit=$LASTEXITCODE - continue to export"
+        $ec = Invoke-PyLogged -PyArgs @("run_parser.py", "--enrich-only", "--enrich-core", "--enrich-limit", "0") -ExtraLogs @($enrichLog)
+        if ($ec -ne 0) {
+            $code = $ec
+            Write-Log "enrich exit=$ec - continue to export"
             break
         }
-        $tail = Get-Content $enrichLog -Raw -ErrorAction SilentlyContinue
+        $tail = Get-Content $enrichLog -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
         if ($tail -match "attempted.: 0") {
             Write-Log "enrich: attempted=0 - no holes left"
             break
@@ -129,8 +152,8 @@ try {
     $cmd = @("run_parser.py", "--rescore", "--export-only")
     if ($useApps) { $cmd += "--export-apps-script" }
     elseif ($useSheets) { $cmd += "--export-gsheets" }
-    & $py @cmd *>&1 | Tee-Object -FilePath $log -Append
-    if ($LASTEXITCODE -ne 0) { $code = $LASTEXITCODE }
+    $ec = Invoke-PyLogged -PyArgs $cmd
+    if ($ec -ne 0) { $code = $ec }
 
     Write-Log ("DONE exit=$code log=$log")
     try {
