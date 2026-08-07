@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -80,20 +79,21 @@ def _zsk_cell(claim: str) -> str:
 
 
 def _r_cell(checklist: dict[str, Any], scoring: dict[str, Any], p: dict[str, Any]) -> str:
-    r = checklist.get("R_turnover") or scoring.get("has_turnover_flag") or ""
-    if r == "ЕСТЬ":
-        return "есть обороты >500 тыс."
-    if r == "НЕТ":
-        return "обороты ≤500 тыс. / мало"
+    r = str(checklist.get("R_turnover") or "").strip()
+    buh_ok = bool(
+        ((p.get("enrich") or {}).get("buh") or {}).get("years")
+        and not ((p.get("enrich") or {}).get("buh") or {}).get("error")
+    )
     if r:
-        return str(r)
-    u = str(checklist.get("U_reports_filed") or "")
-    if u in {"ДА", "сдана"}:
-        return "отчётность есть, выручка не указана"
+        if buh_ok or r.startswith("есть") or r.startswith("мало") or "выручка" in r or "БФО" in r:
+            return r if r.startswith("БФО") else f"БФО: {r}"
+        return r
+    # без БФО — только пометка про текст поста, не притворяемся реестром
+    if p.get("revenues"):
+        ht = scoring.get("has_turnover_flag") or "есть цифры"
+        return f"только в посте (не БФО): {ht}"
     if p.get("zero_turnover_claim"):
         return "продавец: без оборотов / нулёвка"
-    if p.get("revenues"):
-        return "есть цифры в тексте объявления"
     return "нет данных (БФО пусто / не найдено)"
 
 
@@ -212,22 +212,19 @@ def row_from_payload(p: dict[str, Any]) -> list[Any]:
     from parser.extract import is_plausible_firm_name
 
     disp_name = ""
-    for cand in (egrul.get("name_full"), egrul.get("name"), p.get("name")):
-        if not cand:
-            continue
-        s = str(cand)
-        if not is_plausible_firm_name(s):
-            continue
-        if re.search(r"(?i)историей|по\s+запросу|больш\w*\s+оборот", s):
-            continue
-        disp_name = s
-        break
-    if not disp_name and inn and str(inn).isdigit():
-        disp_name = f"(название из ЕГРЮЛ ещё нет, ИНН {inn})"
+    if egrul.get("name"):
+        disp_name = str(egrul["name"])
+        if not disp_name.upper().startswith("ООО"):
+            disp_name = f"ООО «{disp_name}»"
+    elif p.get("name") and is_plausible_firm_name(str(p.get("name"))):
+        disp_name = str(p.get("name"))
+    elif inn and str(inn).isdigit():
+        disp_name = f"ООО (ИНН {inn})"
 
     return [
         disp_name,
-        inn,
+        inn or egrul.get("inn") or "",
+
         checklist.get("C_reg_date") or p.get("reg_date_raw") or "",
         _price_cell(p.get("price_rub")),
         "",  # цена покупки вручную
@@ -349,15 +346,26 @@ def _write_sheet(ws: Worksheet, payloads: list[dict[str, Any]]) -> None:
     )
 
 
+def _has_real_inn(p: dict[str, Any]) -> bool:
+    inn = (p.get("inn") or "").strip()
+    if inn.isdigit() and len(inn) == 10:
+        return True
+    e_inn = str(((p.get("enrich") or {}).get("egrul") or {}).get("inn") or "").strip()
+    return e_inn.isdigit() and len(e_inn) == 10
+
+
 def export_xlsx(
     payloads: list[dict[str, Any]],
     path: Path,
     *,
     skip_duplicates: bool = True,
     by_first_seen_day: bool = True,
+    require_inn: bool = True,
 ) -> Path:
     if skip_duplicates:
         payloads = [p for p in payloads if not p.get("is_duplicate")]
+    if require_inn:
+        payloads = [p for p in payloads if _has_real_inn(p)]
 
     wb = Workbook()
     # убрать дефолтный лист — пересоздадим

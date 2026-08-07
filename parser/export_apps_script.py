@@ -19,7 +19,7 @@ from parser.export_excel import (
     _zsk_cell,
 )
 
-EXPORT_VERSION = "v4-egrul-names"
+EXPORT_VERSION = "v3-pretty-days"
 
 # Компактная шапка для онлайн-таблицы (без сырого текста и ручных пустышек)
 SHEET_HEADERS = [
@@ -90,45 +90,62 @@ def _flat(s: Any, limit: int = 300) -> str:
     return t[:limit]
 
 
-def _official_name(p: dict[str, Any]) -> str:
-    """Только имя из ЕГРЮЛ / уже переписанное после пробива. Рекламу игнорим."""
-    from parser.extract import is_plausible_firm_name
-
-    enrich = p.get("enrich") or {}
-    egrul = enrich.get("egrul") or {}
+def _payload_inn(p: dict[str, Any]) -> str:
     inn = (p.get("inn") or "").strip()
-
-    for cand in (egrul.get("name_full"), egrul.get("name"), p.get("name")):
-        name = _flat(cand or "", 160)
-        if not name or _is_buyer_name(name):
-            continue
-        if not is_plausible_firm_name(name):
-            continue
-        # отсечь «с историей» даже если валидатор пропустил
-        if re.search(r"(?i)историей|по\s+запросу|больш\w*\s+оборот", name):
-            continue
-        if not name.upper().startswith("ООО"):
-            name = f"ООО «{name}»"
-        return name
     if inn.isdigit() and len(inn) == 10:
-        return f"(название из ЕГРЮЛ ещё нет, ИНН {inn})"
+        return inn
+    egrul = (p.get("enrich") or {}).get("egrul") or {}
+    e_inn = (egrul.get("inn") or "").strip()
+    if e_inn.isdigit() and len(e_inn) == 10:
+        return e_inn
     return ""
 
 
 def _display_name(p: dict[str, Any]) -> str:
-    return _official_name(p) or "без названия"
+    from parser.extract import is_plausible_firm_name
+
+    egrul = (p.get("enrich") or {}).get("egrul") or {}
+    inn = _payload_inn(p)
+    # 1) официальное из ЕГРЮЛ — всегда优先тет
+    eg = _flat(egrul.get("name") or egrul.get("name_full") or "", 120)
+    if eg:
+        if not eg.upper().startswith("ООО"):
+            eg = f"ООО «{eg}»"
+        return eg
+    # 2) нормальное имя из поста
+    name = _flat(p.get("name") or "", 120)
+    if name and not _is_buyer_name(name) and is_plausible_firm_name(name):
+        return name
+    if inn:
+        return f"ООО (ИНН {inn})"
+    return "без названия"
+
+
+def _turnover_cell(p: dict[str, Any], cl: dict[str, Any], sc: dict[str, Any]) -> str:
+    """Обороты: БФО отдельно от цифр «из поста» (чтобы не путать)."""
+    buh = (p.get("enrich") or {}).get("buh") or {}
+    r = str(cl.get("R_turnover") or "").strip()
+    if r and buh.get("years") and not buh.get("error"):
+        if r.startswith("БФО:"):
+            return _flat(r, 80)
+        return _flat(f"БФО: {r}", 80)
+    if r.startswith("есть") or r.startswith("мало") or "выручка" in r:
+        # checklist от buh, но блок buh мог не сохраниться
+        return _flat(f"БФО: {r}", 80)
+    # цифры только из текста объявления — помечаем явно
+    flag = str(sc.get("has_turnover_flag") or "")
+    tg = p.get("revenues") or {}
+    if tg or (flag.startswith("есть") or flag.startswith("мало")):
+        raw = flag or "есть цифры"
+        return _flat(f"только в посте (не БФО): {raw}", 80)
+    return "нет данных"
 
 
 def is_sheet_worthy(p: dict[str, Any]) -> bool:
-    """В Sheets — строго с ИНН. Без ИНН рекламные «с историей» не попадают."""
+    """В Sheets — только лоты с реальным ИНН (10 цифр)."""
     if p.get("is_duplicate"):
         return False
-    inn = (p.get("inn") or "").strip()
-    if not (inn.isdigit() and len(inn) == 10):
-        return False
-    if _is_buyer_name(p.get("name") or ""):
-        return False
-    return True
+    return bool(_payload_inn(p))
 
 
 def _short_verdict(p: dict[str, Any]) -> str:
@@ -153,24 +170,27 @@ def sheet_row(p: dict[str, Any]) -> list[Any]:
     if cl.get("F_director"):
         f_parts.append(str(cl["F_director"]))
     dossier = _flat(cl.get("dossier") or "", 220)
-    # I_reliable ДА = достоверно (НЕТ записи о недостоверности) — не путать с «есть проблема»
     i_txt = _human_flag("I_reliable", cl.get("I_reliable")) or "нет данных"
     u_txt = _human_flag("U_reports_filed", cl.get("U_reports_filed")) or "нет данных"
     o_txt = _flat(cl.get("O_clean") or "", 60) or "нет данных"
+    # пустые суды/долги — явно, не молчание
+    p_txt = _flat(cl.get("P_court_cases") or "", 40) or "нет данных"
+    l_txt = _flat(cl.get("L_debts_il") or "", 40) or "нет данных"
+    v_txt = _flat(cl.get("V_leases") or cl.get("V_note") or "", 80) or "нет данных"
     return [
         _display_name(p),
-        p.get("inn") or "",
+        _payload_inn(p),
         price if price is not None else "",
-        _flat(cl.get("C_reg_date") or p.get("reg_date_raw") or "", 40),
+        _flat(cl.get("C_reg_date") or egrul.get("reg_date") or p.get("reg_date_raw") or "", 40),
         _flat(p.get("sno") or "", 20),
-        _flat(" | ".join(f_parts), 200),
-        _flat(cl.get("P_court_cases") or "", 40),
-        _flat(cl.get("L_debts_il") or "", 40),
+        _flat(" | ".join(f_parts), 200) or "нет данных",
+        p_txt,
+        l_txt,
         i_txt,
         o_txt,
-        _flat(cl.get("R_turnover") or sc.get("has_turnover_flag") or "", 40),
+        _turnover_cell(p, cl, sc),
         u_txt,
-        _flat(cl.get("V_leases") or cl.get("V_note") or "", 80),
+        v_txt,
         _zsk_cell(p.get("zsk_claim") or ""),
         _short_verdict(p),
         sc.get("score") or "",
