@@ -12,7 +12,12 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from config import GOOGLE_APPS_SCRIPT_TOKEN, GOOGLE_APPS_SCRIPT_URL
-from parser.export_excel import _first_seen_day, _sheet_title, _zsk_cell
+from parser.export_excel import (
+    _first_seen_day,
+    _human_flag,
+    _sheet_title,
+    _zsk_cell,
+)
 
 EXPORT_VERSION = "v3-pretty-days"
 
@@ -26,7 +31,8 @@ SHEET_HEADERS = [
     "Адрес и директор",
     "Суды",
     "Долги / ИЛ",
-    "Недостоверность",
+    "Достоверность ЕГРЮЛ",
+    "Банкротство",
     "Обороты",
     "Отчётность",
     "Лизинг / залоги",
@@ -40,8 +46,8 @@ SHEET_HEADERS = [
     "Статус ЕГРЮЛ",
 ]
 
-VERDICT_COL = 14  # 1-based для Apps Script
-ZSK_COL = 13
+VERDICT_COL = 15  # 1-based для Apps Script
+ZSK_COL = 14
 
 _WS = re.compile(r"\s+")
 _BUYER_PREFIXES = (
@@ -134,6 +140,10 @@ def sheet_row(p: dict[str, Any]) -> list[Any]:
     if cl.get("F_director"):
         f_parts.append(str(cl["F_director"]))
     dossier = _flat(cl.get("dossier") or "", 220)
+    # I_reliable ДА = достоверно (НЕТ записи о недостоверности) — не путать с «есть проблема»
+    i_txt = _human_flag("I_reliable", cl.get("I_reliable")) or "нет данных"
+    u_txt = _human_flag("U_reports_filed", cl.get("U_reports_filed")) or "нет данных"
+    o_txt = _flat(cl.get("O_clean") or "", 60) or "нет данных"
     return [
         _display_name(p),
         p.get("inn") or "",
@@ -143,9 +153,10 @@ def sheet_row(p: dict[str, Any]) -> list[Any]:
         _flat(" | ".join(f_parts), 200),
         _flat(cl.get("P_court_cases") or "", 40),
         _flat(cl.get("L_debts_il") or "", 40),
-        _flat(cl.get("I_reliable") or "", 40),
+        i_txt,
+        o_txt,
         _flat(cl.get("R_turnover") or sc.get("has_turnover_flag") or "", 40),
-        _flat(cl.get("U_reports_filed") or "", 40),
+        u_txt,
         _flat(cl.get("V_leases") or cl.get("V_note") or "", 80),
         _zsk_cell(p.get("zsk_claim") or ""),
         _short_verdict(p),
