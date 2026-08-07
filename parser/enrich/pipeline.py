@@ -32,8 +32,34 @@ def _is_gap(val: Any) -> bool:
     return val is None or val in _GAP
 
 
+def _risk_upgrade(main: str, cur: Any, nxt: Any) -> bool:
+    """Новый ответ хуже/полнее старого — перезаписываем (есть дела > нет дел)."""
+    c = str(cur or "").strip().lower()
+    n = str(nxt or "").strip().lower()
+    if not n or _is_gap(nxt):
+        return False
+    if main == "P_court_cases":
+        return n in {"есть дела", "есть"} and c in {"нет дел", "нет", "да"}
+    if main == "L_debts_il":
+        # bad: есть долги / старое НЕТ; ok: нет долгов / старое ДА
+        nxt_bad = n.startswith("есть долг") or n == "нет"
+        cur_ok = c.startswith("нет долг") or c == "да"
+        return nxt_bad and cur_ok
+    if main == "I_reliable":
+        # НЕТ = есть недостоверность (хуже, чем ДА)
+        return n == "нет" and c == "да"
+    if main == "V_leases":
+        return (
+            ("есть" in n or "запис" in n)
+            and c in {"нет лизинга/залогов", "нет", "да"}
+        )
+    if main == "O_clean":
+        return n.startswith("есть") and not c.startswith("есть")
+    return False
+
+
 def _checklist_fill_gaps(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
-    """Дописать только пустые/ПРОВЕРИТЬ поля (запасные источники не затирают удачные)."""
+    """Дыры дописываем; при конфликте берём более рискованный/полный ответ."""
     # старые ДА/НЕТ → актуальные подписи, чтобы не смешивать с «нет банкротства»
     out = _remap_checklist_labels(dict(old))
     groups = {
@@ -48,12 +74,6 @@ def _checklist_fill_gaps(old: dict[str, Any], new: dict[str, Any]) -> dict[str, 
             continue
         cur = out.get(main)
         nxt = new[main]
-        # O: можно «ухудшить» до есть банкротство/дисквал
-        o_upgrade = (
-            main == "O_clean"
-            and str(nxt).startswith("есть")
-            and not str(cur or "").startswith("есть")
-        )
         # синонимы O: ДА ≡ нет банкротства — не считаем «уже заполнено» блокером новой фразы
         if main == "O_clean" and cur in {"ДА", "нет банкротства"} and nxt == "нет банкротства":
             out[main] = nxt
@@ -61,7 +81,7 @@ def _checklist_fill_gaps(old: dict[str, Any], new: dict[str, Any]) -> dict[str, 
                 if e in new:
                     out[e] = new[e]
             continue
-        if _is_gap(cur) or o_upgrade:
+        if _is_gap(cur) or _risk_upgrade(main, cur, nxt):
             out[main] = nxt
             for e in extras:
                 if e in new:
