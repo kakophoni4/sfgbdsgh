@@ -607,16 +607,29 @@ def enrich_db(
                 eg = (p.get("enrich") or {}).get("egrul") or {}
                 if eg.get("inn") and not eg.get("error"):
                     return False
-                # битый хит по мусорному имени — перепробить только с ИНН/ОГРН
-                if eg.get("error") in {
-                    "bad_name_for_search",
-                    "name_no_similar",
-                    "empty_query",
-                }:
-                    pass
+
                 inn = (p.get("inn") or "").strip()
                 ogrn = (p.get("ogrn") or "").strip()
                 name = (p.get("name") or "").strip()
+
+                # Уже пробовали по имени и однозначно не нашли — не долбить
+                # одни и те же «ПРЕМЬЕР/АДВАНТА» каждый раунд. Повторим только
+                # если появился ИНН/ОГРН или была сетевая/капча ошибка.
+                err = str(eg.get("error") or "")
+                err_base = err.split(":", 1)[0].strip().lower()
+                permanent_name_errs = {
+                    "name_year_mismatch",
+                    "ambiguous_name",
+                    "ambiguous_name_year",
+                    "name_no_similar",
+                    "bad_name_for_search",
+                    "no_key",
+                    "empty_query",
+                    "not_found",
+                }
+                if err_base in permanent_name_errs and not inn and not ogrn:
+                    return False
+
                 if inn or ogrn:
                     return True
                 if can_search_egrul_by_name(name):
