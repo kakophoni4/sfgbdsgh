@@ -1,9 +1,6 @@
-"""Заливка в Google Sheets через Apps Script (без Google Cloud / service account).
+"""Заливка в Google Sheets через Apps Script (без Google Cloud).
 
-Листы по дням первого появления в чате — как в Excel.
-В .env:
-  GOOGLE_APPS_SCRIPT_URL=https://script.google.com/macros/s/XXXX/exec
-  GOOGLE_APPS_SCRIPT_TOKEN=optional_secret
+v3: листы по дням, только нормальные лоты, компактные колонки, цвета в скрипте.
 """
 from __future__ import annotations
 
@@ -15,47 +12,146 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from config import GOOGLE_APPS_SCRIPT_TOKEN, GOOGLE_APPS_SCRIPT_URL
-from parser.export_excel import (
-    HEADERS,
-    _first_seen_day,
-    _sheet_title,
-    row_from_payload,
-)
+from parser.export_excel import _first_seen_day, _sheet_title, _zsk_cell
+
+EXPORT_VERSION = "v3-pretty-days"
+
+# Компактная шапка для онлайн-таблицы (без сырого текста и ручных пустышек)
+SHEET_HEADERS = [
+    "Название",
+    "ИНН",
+    "Цена",
+    "Дата регистрации",
+    "Налог",
+    "Адрес и директор",
+    "Суды",
+    "Долги / ИЛ",
+    "Недостоверность",
+    "Обороты",
+    "Отчётность",
+    "Лизинг / залоги",
+    "ЗСК",
+    "Итог",
+    "Балл",
+    "Первое появление",
+    "Продавец",
+    "Ссылка",
+    "Companium",
+    "Статус ЕГРЮЛ",
+]
+
+VERDICT_COL = 14  # 1-based для Apps Script
+ZSK_COL = 13
 
 _WS = re.compile(r"\s+")
+_BUYER_NAME = re.compile(
+    r"(?i)^(добрый|здравствуйте|всем\s+привет|подскажите|нужна|нужен|нужно|"
+    r"ищу|куплю|требуется|помогите|есть\s+кто|кто\s+прода"
+)
+_BUYER_TEXT = re.compile(
+    r"(?i)\b(нужна|нужен|нужно|ищу|куплю|требуется|подберите)\b|"
+    r"добрый\s+день|здравствуйте"
+)
+_SALE_HINT = re.compile(
+    r"(?i)\b(прода[еёю]|продажа|стоимость|цена)\b|\bИНН\s*[:\-]?\s*\d{10}"
+)
 
 
-def _sheet_cell(v: Any, *, col_idx: int) -> Any:
-    """Плоские ячейки: без переносов строк (иначе Sheets раздувает высоту)."""
-    if v is None:
+def _flat(s: Any, limit: int = 300) -> str:
+    if s is None:
         return ""
-    if isinstance(v, (int, float)) and not isinstance(v, bool):
-        return v
-    s = str(v).replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
-    s = _WS.sub(" ", s).strip()
-    # сырой текст / итог / досье — короче в онлайн-таблице
-    if col_idx == len(HEADERS) - 1:  # Сырой текст
-        s = s[:400]
-    elif col_idx == 24:  # Итог: брать или нет
-        s = s[:500]
-    elif col_idx == 33:  # Карточка Companium
-        s = s[:400]
-    else:
-        s = s[:2000]
-    return s
+    t = str(s).replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    t = _WS.sub(" ", t).strip()
+    return t[:limit]
 
 
-def _rows_for(payloads: list[dict[str, Any]]) -> list[list[Any]]:
-    rows: list[list[Any]] = []
-    ordered = sorted(
-        payloads,
-        key=lambda p: int((p.get("scoring") or {}).get("score") or 0),
-        reverse=True,
-    )
-    for p in ordered:
-        raw = row_from_payload(p)
-        rows.append([_sheet_cell(v, col_idx=i) for i, v in enumerate(raw)])
-    return rows
+def _display_name(p: dict[str, Any]) -> str:
+    egrul = (p.get("enrich") or {}).get("egrul") or {}
+    name = _flat(egrul.get("name") or p.get("name") or "", 120)
+    if not name or _BUYER_NAME.search(name):
+        inn = (p.get("inn") or "").strip()
+        if inn.isdigit():
+            return f"ООО (ИНН {inn})"
+        return "без названия"
+    # обрезки вроде «Усн» / «дата …»
+    low = name.lower()
+    if low in {"усн", "осно", "осн", "аусн"} or low.startswith("дата "):
+        inn = (p.get("inn") or "").strip()
+        if egrul.get("name"):
+            return _flat(egrul["name"], 120)
+        if inn.isdigit():
+            return f"ООО (ИНН {inn})"
+    return name
+
+
+def is_sheet_worthy(p: dict[str, Any]) -> bool:
+    """В онлайн — только продажи фирм, не «добрый день нужна компания»."""
+    if p.get("is_duplicate"):
+        return False
+    raw = p.get("raw_text") or ""
+    name = p.get("name") or ""
+    if _BUYER_NAME.search(name.strip()):
+        return False
+    head = raw[:320]
+    if _BUYER_TEXT.search(head) and not _SALE_HINT.search(head):
+        inn = (p.get("inn") or "").strip()
+        if not (inn.isdigit() and len(inn) == 10):
+            return False
+
+    inn = (p.get("inn") or "").strip()
+    if inn.isdigit() and len(inn) == 10:
+        return True
+    egrul_name = ((p.get("enrich") or {}).get("egrul") or {}).get("name") or ""
+    if egrul_name and p.get("price_rub"):
+        return True
+    if name.startswith("ООО") and p.get("price_rub"):
+        return True
+    return False
+
+
+def _short_verdict(p: dict[str, Any]) -> str:
+    sc = p.get("scoring") or {}
+    v = (sc.get("verdict") or "").strip()
+    summary = _flat(sc.get("summary") or "", 220)
+    if v and summary:
+        return f"{v}: {summary}"
+    return v or summary or "нет оценки"
+
+
+def sheet_row(p: dict[str, Any]) -> list[Any]:
+    enrich = p.get("enrich") or {}
+    cl = enrich.get("checklist") or {}
+    egrul = enrich.get("egrul") or {}
+    sc = p.get("scoring") or {}
+    price = p.get("price_rub")
+    f_parts = []
+    if cl.get("F_address"):
+        f_parts.append(str(cl["F_address"]))
+    if cl.get("F_director"):
+        f_parts.append(str(cl["F_director"]))
+    dossier = _flat(cl.get("dossier") or "", 220)
+    return [
+        _display_name(p),
+        p.get("inn") or "",
+        price if price is not None else "",
+        _flat(cl.get("C_reg_date") or p.get("reg_date_raw") or "", 40),
+        _flat(p.get("sno") or "", 20),
+        _flat(" | ".join(f_parts), 200),
+        _flat(cl.get("P_court_cases") or "", 40),
+        _flat(cl.get("L_debts_il") or "", 40),
+        _flat(cl.get("I_reliable") or "", 40),
+        _flat(cl.get("R_turnover") or sc.get("has_turnover_flag") or "", 40),
+        _flat(cl.get("U_reports_filed") or "", 40),
+        _flat(cl.get("V_leases") or cl.get("V_note") or "", 80),
+        _zsk_cell(p.get("zsk_claim") or ""),
+        _short_verdict(p),
+        sc.get("score") or "",
+        (p.get("listing_first_seen") or p.get("msg_date") or "")[:10],
+        _flat(p.get("seller_username") or p.get("seller_from_msg") or "", 40),
+        p.get("link") or "",
+        dossier,
+        _flat(cl.get("status") or egrul.get("status") or "", 40),
+    ]
 
 
 def export_apps_script(
@@ -70,43 +166,55 @@ def export_apps_script(
     if skip_duplicates:
         payloads = [p for p in payloads if not p.get("is_duplicate")]
 
+    before = len(payloads)
+    payloads = [p for p in payloads if is_sheet_worthy(p)]
+    skipped = before - len(payloads)
+
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for p in payloads:
         groups[_first_seen_day(p)].append(p)
     days = sorted(groups.keys(), reverse=True)
 
     sheets: list[dict[str, Any]] = []
-    used_titles: set[str] = set()
+    used: set[str] = set()
     for day in days:
         title = _sheet_title(day)
         base, n = title, 2
-        while title in used_titles:
+        while title in used:
             title = f"{base}_{n}"[:90]
             n += 1
-        used_titles.add(title)
+        used.add(title)
+        rows_src = sorted(
+            groups[day],
+            key=lambda p: int((p.get("scoring") or {}).get("score") or 0),
+            reverse=True,
+        )
         sheets.append(
             {
                 "name": title,
-                "headers": HEADERS,
-                "rows": _rows_for(groups[day]),
+                "headers": SHEET_HEADERS,
+                "rows": [sheet_row(p) for p in rows_src],
             }
         )
 
     if not sheets:
-        sheets = [{"name": "пусто", "headers": HEADERS, "rows": []}]
+        sheets = [{"name": "пусто", "headers": SHEET_HEADERS, "rows": []}]
 
-    body = {"sheets": sheets}
+    body = {
+        "sheets": sheets,
+        "verdictCol": VERDICT_COL,
+        "zskCol": ZSK_COL,
+        "version": EXPORT_VERSION,
+    }
     token = (GOOGLE_APPS_SCRIPT_TOKEN or "").strip()
     post_url = url
     if token:
         sep = "&" if "?" in url else "?"
         post_url = f"{url}{sep}{urlencode({'token': token})}"
 
-    raw_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
-    # Apps Script ~30–50s лимит; большой JSON может не влезть — тогда чанками
     req = Request(
         post_url,
-        data=raw_bytes,
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
         headers={"Content-Type": "application/json; charset=utf-8"},
         method="POST",
     )
@@ -115,15 +223,21 @@ def export_apps_script(
     try:
         data = json.loads(raw)
     except Exception:
-        raise SystemExit(f"Apps Script ответ не JSON: {raw[:300]}")
+        raise SystemExit(f"Apps Script ответ не JSON: {raw[:400]}")
 
     if not data.get("ok"):
         raise SystemExit(f"Apps Script error: {data}")
 
     names = data.get("names") or []
     print(
-        f"Google Sheets (Apps Script): ok | строк={data.get('rows')} | "
-        f"листов={data.get('sheets')} | "
-        f"вкладки={', '.join(names[:8])}{'…' if len(names) > 8 else ''}"
+        f"Google Sheets [{EXPORT_VERSION}]: ok | строк={data.get('rows')} | "
+        f"листов={data.get('sheets')} | отброшено_мусора={skipped} | "
+        f"script={data.get('version')} | "
+        f"вкладки={', '.join(names[:10])}{'…' if len(names) > 10 else ''}"
     )
+    if data.get("version") != EXPORT_VERSION:
+        print(
+            "⚠ В Google всё ещё СТАРЫЙ Apps Script. "
+            "Замените код в редакторе и сделайте Новую версию развёртывания."
+        )
     return url

@@ -66,6 +66,18 @@ RE_SPAM = re.compile(
     r"продолжить\s+сотрудничество|@confessionalis_bot",
     re.I,
 )
+# спрос / «нужна компания» — не лот на продажу
+RE_BUYER = re.compile(
+    r"(?i)\b(нужна|нужен|нужно|ищу|куплю|требуется|подберите|помогите\s+найти)\b|"
+    r"добрый\s+день|здравствуйте"
+)
+RE_SALE = re.compile(
+    r"(?i)\b(прода[еёю]|продажа|стоимость|цена)\b|\bИНН\s*[:\-]?\s*\d{10}"
+)
+RE_BAD_NAME_LINE = re.compile(
+    r"(?i)^(добрый|здравствуйте|всем|подскажите|нужна|нужен|нужно|ищу|куплю|"
+    r"требуется|помогите|дата\s+\d|усн|осно)\b"
+)
 
 FOOTER_CUT = re.compile(
     r"(✍\s*Для связи|Большая часть компаний|📱\s*Удобный каталог|"
@@ -235,7 +247,7 @@ def extract_name(text: str) -> str:
         name = name.strip(" «»\"'“”")
         if len(name) >= 2:
             return f"ООО «{name}»"
-    # первая содержательная строка
+    # первая содержательная строка (не приветствие / не «нужна компания»)
     for line in text.splitlines():
         line = line.strip()
         if not line or len(line) < 2:
@@ -248,8 +260,11 @@ def extract_name(text: str) -> str:
             continue
         # убрать эмодзи-префиксы
         clean = re.sub(r"^[\W_🟢✅✔️❇️💎🔥]+", "", line).strip()
-        if clean and not clean.lower().startswith("инн"):
-            return clean[:120]
+        if not clean or clean.lower().startswith("инн"):
+            continue
+        if RE_BAD_NAME_LINE.search(clean):
+            continue
+        return clean[:120]
     return ""
 
 
@@ -279,6 +294,10 @@ def is_spam_or_ad(text: str) -> str:
     # прайс без конкретной фирмы
     if re.search(r"без\s+сч[её]та\s+от\s+\d", t, re.I) and t.count("ООО") == 0:
         return "price_list"
+    # спрос: «нужна нулёвка» без продажи конкретной фирмы
+    if RE_BUYER.search(t[:400]) and not RE_SALE.search(t[:400]) and not RE_INN_LABELED.search(t):
+        if not RE_OOO.search(t):
+            return "buyer_request"
     return ""
 
 
@@ -343,7 +362,7 @@ def parse_block(
 
     skip = is_spam_or_ad(block)
     # блок-часть мультипоста может быть короче — проверяем мягче
-    if skip == "catalog_ad" or skip == "price_list":
+    if skip in {"catalog_ad", "price_list", "buyer_request"}:
         listing.is_listing = False
         listing.skip_reason = skip
         return listing
