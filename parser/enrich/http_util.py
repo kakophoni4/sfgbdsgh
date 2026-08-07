@@ -12,6 +12,7 @@ def make_session(base_headers: dict[str, str] | None = None):
         ),
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+        "X-Requested-With": "XMLHttpRequest",
     }
     if base_headers:
         headers.update(base_headers)

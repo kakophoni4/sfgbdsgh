@@ -181,6 +181,37 @@ def _try_json(session, url: str, params: dict | None = None) -> Any:
     return _parse_response(r)
 
 
+def _search_org(session, base: str, inn: str) -> tuple[dict | None, str]:
+    """Пробуем несколько эндпоинтов поиска. Возвращает (org, error)."""
+    endpoints = [
+        (f"{base}/advanced-search/organizations/search", {"query": inn, "page": "0"}),
+        (f"{base}/advanced-search/organizations/search/", {"query": inn, "page": "0"}),
+        (f"{base}/nbo/organizations/search", {"query": inn, "page": "0"}),
+        (
+            f"{base}/advanced-search/organizations/",
+            {"inn": inn, "allFieldsMatch": "false", "page": "0"},
+        ),
+    ]
+    last = "not_found"
+    for url, params in endpoints:
+        try:
+            data = _try_json(session, url, params)
+        except Exception as e:  # noqa: BLE001
+            last = str(e)
+            continue
+        content = None
+        if isinstance(data, dict):
+            content = data.get("content") or data.get("rows") or data.get("data")
+        elif isinstance(data, list):
+            content = data
+        if content:
+            org = content[0] if isinstance(content[0], dict) else None
+            if org:
+                return org, ""
+        last = "empty_content"
+    return None, last
+
+
 def fetch_buh(inn: str, *, pause: float = 0.8) -> BuhReport:
     inn = (inn or "").strip()
     if not inn.isdigit() or len(inn) not in (10, 12):
@@ -194,30 +225,22 @@ def fetch_buh(inn: str, *, pause: float = 0.8) -> BuhReport:
             {
                 "Referer": f"{base}/",
                 "Origin": base,
+                "Accept": "application/json, text/plain, */*",
             }
         )
         try:
-            search = _try_json(
-                session,
-                f"{base}/advanced-search/organizations/search",
-                {"query": inn, "page": "0"},
-            )
-            time.sleep(pause)
-            content = search.get("content") if isinstance(search, dict) else None
-            if not content:
-                search = _try_json(
-                    session,
-                    f"{base}/nbo/organizations/search",
-                    {"query": inn, "page": "0"},
-                )
-                time.sleep(pause)
-                content = search.get("content") if isinstance(search, dict) else None
+            # прогрев куки (SPA)
+            try:
+                http_get(session, f"{base}/", allow_redirects=True, timeout=25)
+            except Exception:
+                pass
+            time.sleep(min(pause, 1.0))
 
-            if not content:
-                last_err = "not_found"
+            org, err = _search_org(session, base, inn)
+            if not org:
+                last_err = err or "not_found"
                 continue
 
-            org = content[0]
             org_id = str(org.get("id") or "").replace("\xa0", "").replace(" ", "")
             name = (
                 org.get("shortName") or org.get("fullName") or org.get("name") or ""
@@ -226,11 +249,19 @@ def fetch_buh(inn: str, *, pause: float = 0.8) -> BuhReport:
                 last_err = "no_org_id"
                 continue
 
-            try:
-                bfo = _try_json(session, f"{base}/nbo/organizations/{org_id}/bfo")
-            except Exception:
-                bfo = _try_json(session, f"{base}/nbo/organizations/{org_id}/bfo/")
             time.sleep(pause)
+            bfo = None
+            for bfo_url in (
+                f"{base}/nbo/organizations/{org_id}/bfo",
+                f"{base}/nbo/organizations/{org_id}/bfo/",
+            ):
+                try:
+                    bfo = _try_json(session, bfo_url)
+                    break
+                except Exception as e:  # noqa: BLE001
+                    last_err = str(e)
+            if bfo is None:
+                continue
 
             if isinstance(bfo, dict):
                 bfo = bfo.get("content") or bfo.get("bfo") or bfo.get("data") or []
