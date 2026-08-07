@@ -401,6 +401,7 @@ def _run_source(
 ) -> None:
     candidates = [p for p in payloads if pick(p)][:limit]
     print(f"{name}: {len(candidates)} шт")
+    captcha_streak = 0
     for i, p in enumerate(candidates, 1):
         key = p.get("inn") or p.get("ogrn") or p.get("name")
         print(f"  [{name} {i}/{len(candidates)}] {key} ...", end=" ", flush=True)
@@ -426,6 +427,7 @@ def _run_source(
         else:
             src_block = enrich_u.get("unreliable") or {}
 
+        err = str(src_block.get("error") or "")
         soft_ok = apply in (
             apply_kad,
             apply_fssp,
@@ -435,19 +437,35 @@ def _run_source(
             apply_checko,
             apply_saby,
         )
-        if src_block.get("error") and not soft_ok:
+        if err and not soft_ok:
             stats[err_key] += 1
-            print(f"ERR {src_block.get('error')}")
+            print(f"ERR {err}")
             db.save_payload(updated)
-            if src_block.get("error") == "captcha" and apply is apply_egrul:
+            if err == "captcha" and apply is apply_egrul:
                 print("Капча ЕГРЮЛ — стоп.")
                 raise StopIteration
             continue
 
         stats[ok_key] += 1
-        prefix = "SOFT" if src_block.get("error") else "OK"
+        prefix = "SOFT" if err else "OK"
         print(prefix, summary(updated))
         db.save_payload(updated)
+
+        # Companium/Checko: 3 капчи подряд → стоп источника (не жечь весь батч)
+        if apply in (apply_companium, apply_checko) and (
+            "recaptcha" in err.lower()
+            or "captcha" in err.lower()
+            or err in {"429", "http_429"}
+        ):
+            captcha_streak += 1
+            if captcha_streak >= 3:
+                print(
+                    f"  → {name}: капча {captcha_streak}× подряд — стоп. "
+                    "Смените session-… в ENRICH_PROXY и повторите."
+                )
+                break
+        else:
+            captcha_streak = 0
 
 
 def enrich_db(
