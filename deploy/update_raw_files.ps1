@@ -1,11 +1,10 @@
-# FAST update: download only code files via raw.githubusercontent.com
-# No zip, no backup of data/venv. ~10-20 sec.
+# FAST update: download code via GitHub commit SHA (не кэш /main).
 #
 #   powershell -ExecutionPolicy Bypass -File deploy\update_raw_files.ps1
 
 $ErrorActionPreference = "Stop"
 $Root = "C:\firmy"
-$Base = "https://raw.githubusercontent.com/kakophoni4/sfgbdsgh/main"
+$Repo = "kakophoni4/sfgbdsgh"
 $files = @(
     "run_parser.py",
     "smoke_check.py",
@@ -18,8 +17,6 @@ $files = @(
     "parser/export_apps_script.py",
     "deploy/apps_script_sheets.js",
     "deploy/setup_apps_script.ps1",
-
-
     "parser/scrape.py",
     "parser/dedup.py",
     "parser/db.py",
@@ -49,22 +46,39 @@ $files = @(
 
 if (-not (Test-Path $Root)) { throw "Missing $Root" }
 Set-Location $Root
+
+# Актуальный SHA main — raw по /main часто кэшируется со старым содержимым
+$shaResp = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/commits/main" -Headers @{
+    "User-Agent" = "firmy-updater"
+    "Accept"     = "application/vnd.github+json"
+}
+$sha = [string]$shaResp.sha
+if (-not $sha -or $sha.Length -lt 7) { throw "Cannot resolve main SHA from GitHub API" }
+Write-Host "main SHA: $sha"
+
+$Base = "https://raw.githubusercontent.com/$Repo/$sha"
 $n = 0
-$bust = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 foreach ($rel in $files) {
-    # ?t=... — иначе raw.githubusercontent.com отдаёт закэшированный старый файл
-    $url = "$Base/$rel" + "?t=$bust"
+    $url = "$Base/$rel"
     $out = Join-Path $Root ($rel -replace "/", "\")
     $dir = Split-Path $out -Parent
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     try {
         Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing -TimeoutSec 60 -Headers @{
-            "Cache-Control" = "no-cache"
+            "User-Agent" = "firmy-updater"
         }
         $n++
         Write-Host ("OK " + $rel)
     } catch {
-        Write-Host ("SKIP " + $rel + " :: " + $_.Exception.Message)
+        # запасной CDN
+        try {
+            $alt = "https://cdn.jsdelivr.net/gh/$Repo@$sha/$rel"
+            Invoke-WebRequest -Uri $alt -OutFile $out -UseBasicParsing -TimeoutSec 60
+            $n++
+            Write-Host ("OK(jsdelivr) " + $rel)
+        } catch {
+            Write-Host ("SKIP " + $rel + " :: " + $_.Exception.Message)
+        }
     }
 }
-Write-Host ("Done: $n files. No data/venv touched. cacheBust=$bust")
+Write-Host ("Done: $n files from $sha. No data/venv touched.")
