@@ -65,14 +65,18 @@ def main() -> None:
     else:
         print(f"  OK {rec.name} inn={rec.inn} status={rec.status}")
 
-    print("\n=== БФО lookup (Сбер) ===")
+    # Сбер в публичном БФО часто пустой — проверяем обычное ООО
+    print("\n=== БФО lookup (ООО, не банк) ===")
     from parser.enrich.buh import fetch_buh
 
-    buh = fetch_buh("7707083893", pause=1.0)
+    buh = fetch_buh("7709613803", pause=1.0)
     if buh.error:
         print(f"  ERR {buh.error}")
     else:
-        print(f"  OK org_id={buh.org_id} years={len(buh.years)} name={buh.name}")
+        print(
+            f"  OK org_id={buh.org_id} years={len(buh.years)} name={buh.name} "
+            f"source={buh.source}"
+        )
 
     print("\nГотово. Если ЕГРЮЛ/БФО = OK — сервер подходит.")
 

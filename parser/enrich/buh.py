@@ -4,9 +4,10 @@ import socket
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
-from urllib.parse import urlparse
 
 from .http_util import http_get, make_session
+
+BASE = "https://bo.nalog.gov.ru"
 
 
 def _host_ok(host: str) -> bool:
@@ -17,23 +18,13 @@ def _host_ok(host: str) -> bool:
         return False
 
 
-def _bases() -> list[str]:
-    """На сервере gov.ru резолвится — берём его первым (туда редиректит bo.nalog.ru)."""
-    ordered = []
-    if _host_ok("bo.nalog.gov.ru"):
-        ordered.append("https://bo.nalog.gov.ru")
-    if _host_ok("bo.nalog.ru"):
-        ordered.append("https://bo.nalog.ru")
-    return ordered or ["https://bo.nalog.gov.ru", "https://bo.nalog.ru"]
-
-
 @dataclass
 class YearFinance:
     period: str = ""
-    revenue: int | None = None  # руб, строка 2110
+    revenue: int | None = None  # руб, строка 2110 / gainSum
     borrowed_short: int | None = None  # 1510
     borrowed_long: int | None = None  # 1410
-    payables: int | None = None  # 1520 кредиторка
+    payables: int | None = None  # 1520
 
 
 @dataclass
@@ -43,7 +34,7 @@ class BuhReport:
     name: str = ""
     years: list[YearFinance] = field(default_factory=list)
     error: str = ""
-    source: str = "bo.nalog.gov.ru"
+    source: str = BASE
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -57,20 +48,6 @@ def _to_rub(val: Any) -> int | None:
         return int(float(val) * 1000)
     except (TypeError, ValueError):
         return None
-
-
-def _dig(obj: Any, *paths: tuple[str, ...]) -> Any:
-    for path in paths:
-        cur = obj
-        ok = True
-        for key in path:
-            if not isinstance(cur, dict) or key not in cur:
-                ok = False
-                break
-            cur = cur[key]
-        if ok:
-            return cur
-    return None
 
 
 def _extract_correction(block: dict[str, Any]) -> dict[str, Any]:
@@ -93,32 +70,16 @@ def _parse_year_block(block: dict[str, Any]) -> YearFinance:
 
     fr = corr.get("financialResult") if isinstance(corr.get("financialResult"), dict) else {}
     bal = corr.get("balance") if isinstance(corr.get("balance"), dict) else {}
-    if not fr and not bal:
-        fr = corr
-        bal = corr
 
-    revenue = _to_rub(
-        _dig(
-            {"fr": fr, "b": block, "c": corr},
-            ("fr", "current2110"),
-            ("fr", "current_2110"),
-            ("c", "current2110"),
-            ("b", "gainSum"),
-            ("b", "revenue"),
-        )
-    )
+    revenue = None
+    if isinstance(fr, dict):
+        revenue = _to_rub(fr.get("current2110"))
     if revenue is None and block.get("gainSum") is not None:
         revenue = _to_rub(block.get("gainSum"))
 
-    borrowed_short = _to_rub(
-        _dig({"bal": bal, "c": corr}, ("bal", "current1510"), ("c", "current1510"))
-    )
-    borrowed_long = _to_rub(
-        _dig({"bal": bal, "c": corr}, ("bal", "current1410"), ("c", "current1410"))
-    )
-    payables = _to_rub(
-        _dig({"bal": bal, "c": corr}, ("bal", "current1520"), ("c", "current1520"))
-    )
+    borrowed_short = _to_rub(bal.get("current1510")) if bal else None
+    borrowed_long = _to_rub(bal.get("current1410")) if bal else None
+    payables = _to_rub(bal.get("current1520")) if bal else None
 
     return YearFinance(
         period=period,
@@ -129,161 +90,107 @@ def _parse_year_block(block: dict[str, Any]) -> YearFinance:
     )
 
 
-def _parse_response(r) -> Any:
+def _json(session, url: str, params: dict | None = None) -> Any:
+    r = http_get(session, url, params=params, allow_redirects=True, timeout=45)
     code = getattr(r, "status_code", 200)
     if code >= 400:
         raise RuntimeError(f"http_{code}")
+    text = r.text if hasattr(r, "text") else ""
     ctype = ""
     try:
         ctype = (r.headers.get("content-type") or "").lower()
     except Exception:
         pass
-    text = r.text if hasattr(r, "text") else ""
     if "json" not in ctype and text.lstrip()[:1] not in ("{", "["):
         raise RuntimeError(f"non_json:{ctype}:{text[:80]!r}")
     return r.json()
 
 
-def _try_json(session, url: str, params: dict | None = None) -> Any:
-    """
-    Запрос JSON. Редирект bo.nalog.ru → bo.nalog.gov.ru:
-    если Location без path — сохраняем исходный API-путь на gov.ru.
-    """
-    r = http_get(session, url, params=params, allow_redirects=False)
-    code = getattr(r, "status_code", 200)
-
-    if code in (301, 302, 303, 307, 308):
-        loc = ""
-        try:
-            loc = r.headers.get("location") or ""
-        except Exception:
-            loc = ""
-        orig = urlparse(url)
-        if not loc.startswith("http"):
-            loc = f"{orig.scheme}://{orig.netloc}{loc}"
-
-        loc_p = urlparse(loc)
-        # 302 на корень gov.ru — переносим path+query API
-        if "bo.nalog.gov.ru" in loc_p.netloc and (not loc_p.path or loc_p.path == "/"):
-            q = orig.query
-            if params:
-                from urllib.parse import urlencode
-
-                q = urlencode(params)
-            loc = f"https://bo.nalog.gov.ru{orig.path}"
-            if q:
-                loc = f"{loc}?{q}"
-            params = None  # уже в URL
-
-        r = http_get(session, loc, params=params, allow_redirects=True)
-        return _parse_response(r)
-
-    return _parse_response(r)
-
-
-def _search_org(session, base: str, inn: str) -> tuple[dict | None, str]:
-    """Пробуем несколько эндпоинтов поиска. Возвращает (org, error)."""
-    endpoints = [
-        (f"{base}/advanced-search/organizations/search", {"query": inn, "page": "0"}),
-        (f"{base}/advanced-search/organizations/search/", {"query": inn, "page": "0"}),
-        (f"{base}/nbo/organizations/search", {"query": inn, "page": "0"}),
-        (
-            f"{base}/advanced-search/organizations/",
-            {"inn": inn, "allFieldsMatch": "false", "page": "0"},
-        ),
-    ]
-    last = "not_found"
-    for url, params in endpoints:
-        try:
-            data = _try_json(session, url, params)
-        except Exception as e:  # noqa: BLE001
-            last = str(e)
-            continue
-        content = None
-        if isinstance(data, dict):
-            content = data.get("content") or data.get("rows") or data.get("data")
-        elif isinstance(data, list):
-            content = data
-        if content:
-            org = content[0] if isinstance(content[0], dict) else None
-            if org:
-                return org, ""
-        last = "empty_content"
-    return None, last
-
-
 def fetch_buh(inn: str, *, pause: float = 0.8) -> BuhReport:
+    """
+    Актуальный API (bo.nalog.gov.ru):
+      GET /advanced-search/organizations?inn=&page=0&allFieldsMatch=false
+      GET /nbo/organizations/{id}/bfo
+    """
     inn = (inn or "").strip()
     if not inn.isdigit() or len(inn) not in (10, 12):
         return BuhReport(inn=inn, error="bad_inn")
+    if not _host_ok("bo.nalog.gov.ru") and not _host_ok("bo.nalog.ru"):
+        return BuhReport(inn=inn, error="dns_fail")
 
-    bases = _bases()
-    last_err = ""
+    base = BASE if _host_ok("bo.nalog.gov.ru") else "https://bo.nalog.ru"
+    session = make_session(
+        {
+            "Referer": f"{base}/",
+            "Origin": base,
+            "Accept": "application/json, text/plain, */*",
+        }
+    )
 
-    for base in bases:
-        session = make_session(
-            {
-                "Referer": f"{base}/",
-                "Origin": base,
-                "Accept": "application/json, text/plain, */*",
-            }
-        )
+    try:
         try:
-            # прогрев куки (SPA)
+            http_get(session, f"{base}/", allow_redirects=True, timeout=25)
+        except Exception:
+            pass
+        time.sleep(min(pause, 1.0))
+
+        # без period — надёжнее для молодых ООО; с period — fallback
+        content = []
+        last_err = "not_found"
+        for params in (
+            {"inn": inn, "page": 0, "allFieldsMatch": "false"},
+            {"inn": inn, "page": 0, "allFieldsMatch": "false", "period": 2024},
+            {"inn": inn, "page": 0, "allFieldsMatch": "false", "period": 2023},
+            {"ogrn": inn, "page": 0, "allFieldsMatch": "false"}  # на случай если передали ОГРН
+            if len(inn) == 13
+            else None,
+        ):
+            if not params:
+                continue
             try:
-                http_get(session, f"{base}/", allow_redirects=True, timeout=25)
-            except Exception:
-                pass
-            time.sleep(min(pause, 1.0))
-
-            org, err = _search_org(session, base, inn)
-            if not org:
-                last_err = err or "not_found"
+                data = _json(session, f"{base}/advanced-search/organizations", params)
+            except Exception as e:  # noqa: BLE001
+                last_err = str(e)
                 continue
+            content = data.get("content") or []
+            if content:
+                break
+            last_err = "not_found"
+            time.sleep(0.3)
 
-            org_id = str(org.get("id") or "").replace("\xa0", "").replace(" ", "")
-            name = (
-                org.get("shortName") or org.get("fullName") or org.get("name") or ""
-            ).strip()
-            if not org_id:
-                last_err = "no_org_id"
-                continue
+        if not content:
+            # банк / закрытая отчётность часто даёт пусто
+            return BuhReport(inn=inn, error=last_err, source=base)
 
-            time.sleep(pause)
-            bfo = None
-            for bfo_url in (
-                f"{base}/nbo/organizations/{org_id}/bfo",
-                f"{base}/nbo/organizations/{org_id}/bfo/",
-            ):
-                try:
-                    bfo = _try_json(session, bfo_url)
-                    break
-                except Exception as e:  # noqa: BLE001
-                    last_err = str(e)
-            if bfo is None:
-                continue
+        org = content[0]
+        org_id = str(org.get("id") or "").replace("\xa0", "").replace(" ", "")
+        name = (
+            org.get("shortName") or org.get("fullName") or org.get("name") or ""
+        ).strip()
+        # убрать html <strong> из подсветки
+        name = name.replace("<strong>", "").replace("</strong>", "")
+        if not org_id:
+            return BuhReport(inn=inn, error="no_org_id", source=base)
 
-            if isinstance(bfo, dict):
-                bfo = bfo.get("content") or bfo.get("bfo") or bfo.get("data") or []
-            if not isinstance(bfo, list):
-                last_err = "bad_bfo_shape"
-                continue
+        time.sleep(pause)
+        bfo = _json(session, f"{base}/nbo/organizations/{org_id}/bfo")
+        if isinstance(bfo, dict):
+            bfo = bfo.get("content") or bfo.get("bfo") or bfo.get("data") or []
+        if not isinstance(bfo, list):
+            return BuhReport(inn=inn, org_id=org_id, name=name, error="bad_bfo_shape", source=base)
 
-            years = [_parse_year_block(x) for x in bfo if isinstance(x, dict)]
-            years.sort(key=lambda y: y.period or "", reverse=True)
+        years = [_parse_year_block(x) for x in bfo if isinstance(x, dict)]
+        years.sort(key=lambda y: y.period or "", reverse=True)
 
-            return BuhReport(
-                inn=inn,
-                org_id=org_id,
-                name=name,
-                years=years,
-                source=base,
-            )
-        except Exception as e:  # noqa: BLE001
-            last_err = str(e)
-            continue
-
-    return BuhReport(inn=inn, error=last_err or "unreachable")
+        return BuhReport(
+            inn=inn,
+            org_id=org_id,
+            name=name,
+            years=years,
+            source=base,
+        )
+    except Exception as e:  # noqa: BLE001
+        return BuhReport(inn=inn, error=str(e), source=base)
 
 
 def checklist_from_buh(report: BuhReport) -> dict[str, Any]:
@@ -338,8 +245,6 @@ def checklist_from_buh(report: BuhReport) -> dict[str, Any]:
         "org_id": report.org_id,
         "name": report.name,
         "card_url": (
-            f"https://bo.nalog.gov.ru/organizations-card/{report.org_id}"
-            if report.org_id
-            else ""
+            f"{BASE}/organizations-card/{report.org_id}" if report.org_id else ""
         ),
     }
