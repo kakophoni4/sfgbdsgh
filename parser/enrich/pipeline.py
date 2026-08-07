@@ -68,6 +68,7 @@ def _checklist_fill_gaps(old: dict[str, Any], new: dict[str, Any]) -> dict[str, 
                     out[e] = new[e]
     _EXTRA_KEEP = {
         "dossier",
+        "checko_dossier",
         "employees",
         "msp",
         "sanctions",
@@ -624,15 +625,11 @@ def enrich_db(
         if "checko" in sources:
 
             def _pick_checko(p: dict[str, Any]) -> bool:
+                """Только дыры P/L — не дергать из‑за V/I (ими заняты Федресурс/Saby)."""
                 if not _ogrn_of(p):
                     return False
                 cl = (p.get("enrich") or {}).get("checklist") or {}
-                return (
-                    _is_gap(cl.get("P_court_cases"))
-                    or _is_gap(cl.get("L_debts_il"))
-                    or _is_gap(cl.get("I_reliable"))
-                    or _is_gap(cl.get("V_leases"))
-                )
+                return _is_gap(cl.get("P_court_cases")) or _is_gap(cl.get("L_debts_il"))
 
             _run_source(
                 name="Checko",
@@ -646,8 +643,11 @@ def enrich_db(
                 ok_key="checko_ok",
                 err_key="checko_err",
                 summary=lambda u: (
-                    f"P={(u.get('enrich') or {}).get('checklist', {}).get('P_court_cases')} "
-                    f"L={(u.get('enrich') or {}).get('checklist', {}).get('L_debts_il')}"
+                    ((u.get("enrich") or {}).get("checklist") or {}).get("checko_dossier")
+                    or (
+                        f"суды: {(u.get('enrich') or {}).get('checklist', {}).get('P_court_cases')} "
+                        f"долги: {(u.get('enrich') or {}).get('checklist', {}).get('L_debts_il')}"
+                    )
                 ),
             )
             payloads = unique_only(db.all_payloads()) if unique_first else db.all_payloads()

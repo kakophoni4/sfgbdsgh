@@ -183,9 +183,40 @@ def fetch_checko(*, ogrn: str = "", inn: str = "") -> CheckoReport:
     return report
 
 
+def human_checko(report: CheckoReport) -> str:
+    """Короткая сводка для лога (без букв P/L)."""
+    if report.error and report.court_cases is None and report.enforcements is None:
+        return f"Checko недоступен: {report.error}"
+    parts: list[str] = []
+    if report.court_cases is not None:
+        parts.append(
+            "суды: нет дел"
+            if report.court_cases == 0
+            else f"суды: {report.court_cases} дел"
+        )
+    if report.enforcements is not None:
+        parts.append(
+            "долги ФССП: нет"
+            if report.enforcements == 0
+            else f"долги ФССП: {report.enforcements} пр."
+        )
+    if report.unreliable is False:
+        parts.append("недостоверки: нет")
+    elif report.unreliable is True:
+        parts.append("недостоверки: ЕСТЬ")
+    if report.fedresurs_empty is True:
+        parts.append("федресурс: пусто")
+    elif report.fedresurs_empty is False:
+        parts.append("федресурс: есть сообщения")
+    return "; ".join(parts) if parts else "данных мало"
+
+
 def checklist_from_checko(report: CheckoReport) -> dict[str, Any]:
     """Только заполненные поля — чтобы не затирать удачные значения других источников."""
-    out: dict[str, Any] = {"checko_url": report.url or f"{BASE}/company/{report.ogrn}"}
+    out: dict[str, Any] = {
+        "checko_url": report.url or f"{BASE}/company/{report.ogrn}",
+        "checko_dossier": human_checko(report),
+    }
     if report.error and report.court_cases is None and report.enforcements is None:
         out["checko_error"] = report.error
         return out
