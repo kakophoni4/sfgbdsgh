@@ -45,7 +45,7 @@ ENRICH_LIMIT = int(os.getenv("ENRICH_LIMIT", "40"))
 # Список (host:port, whitelist IP) — предпочтительно:
 ENRICH_PROXY_LIST_URL = os.getenv("ENRICH_PROXY_LIST_URL", "").strip()
 ENRICH_PROXY_LIST_TTL = float(os.getenv("ENRICH_PROXY_LIST_TTL", "900"))  # сек кэша
-ENRICH_PROXY_TRIES = int(os.getenv("ENRICH_PROXY_TRIES", "8"))  # попыток на запрос
+ENRICH_PROXY_TRIES = int(os.getenv("ENRICH_PROXY_TRIES", "15"))  # попыток на одну фирму
 # Одиночный прокси (если списка нет): http://user:pass@host:443
 ENRICH_PROXY = os.getenv("ENRICH_PROXY", "").strip()
 

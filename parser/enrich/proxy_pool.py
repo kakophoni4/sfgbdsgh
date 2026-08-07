@@ -205,6 +205,30 @@ def max_tries() -> int:
     return max(1, min(tries, 30))
 
 
+def pool_size() -> int:
+    ensure_loaded()
+    return len(_state.get("proxies") or [])
+
+
+def suggested_tries() -> int:
+    """Сколько прокси пробовать на одну компанию при капче.
+
+    База — ENRICH_PROXY_TRIES, но если пул большой — не сдаёмся после 8 штук:
+    пробуем заметную долю пула (до 25), чтобы та же фирма крутилась дальше.
+    """
+    base = max_tries()
+    n = pool_size()
+    if n <= 1:
+        return base
+    # минимум base, иначе четверть пула, потолок 25
+    return max(base, min(25, max(base, n // 4)))
+
+
+def proxy_label(proxy: str | None) -> str:
+    p = (proxy or "").replace("http://", "").replace("https://", "")
+    return p or "direct"
+
+
 def is_proxy_dead_error(exc: BaseException | str) -> bool:
     msg = str(exc).lower()
     keys = (

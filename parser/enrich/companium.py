@@ -18,9 +18,10 @@ from .proxy_pool import (
     current_proxy,
     is_proxy_dead_error,
     mark_bad,
-    max_tries,
     proxy_enabled,
+    proxy_label,
     rotate_proxy,
+    suggested_tries,
 )
 
 BASE = "https://companium.ru"
@@ -387,15 +388,20 @@ def _fetch_http_once(ogrn: str, *, proxy_url: str | None) -> tuple[dict[str, str
 
 
 def _fetch_http(ogrn: str) -> tuple[dict[str, str], str]:
-    """Карточка Companium; при мёртвом прокси/капче — следующий из пула."""
-    tries = max_tries() if proxy_enabled() else 1
+    """Карточка Companium; при мёртвом прокси/капче — крутим ту же фирму по пулу."""
+    tries = suggested_tries() if proxy_enabled() else 1
     last_err = "proxy_exhausted"
     for attempt in range(tries):
         proxy = current_proxy() if proxy_enabled() else None
+        tag = proxy_label(proxy)
         try:
             pages, err = _fetch_http_once(ogrn, proxy_url=proxy)
         except Exception as e:  # noqa: BLE001
             if proxy_enabled() and is_proxy_dead_error(e):
+                print(
+                    f"proxy {attempt + 1}/{tries} {tag} dead → next",
+                    flush=True,
+                )
                 mark_bad(proxy, reason=str(e))
                 rotate_proxy()
                 last_err = f"proxy_dead:{e}"
@@ -405,22 +411,35 @@ def _fetch_http(ogrn: str) -> tuple[dict[str, str], str]:
         used = pages.pop("_proxy", proxy or "")
         if err in {"recaptcha_v2", "captcha"} or err == "http_429":
             if proxy_enabled():
+                print(
+                    f"proxy {attempt + 1}/{tries} {proxy_label(used or proxy)} "
+                    f"{err} → next",
+                    flush=True,
+                )
                 mark_bad(used or proxy, reason=err)
                 rotate_proxy()
                 last_err = err
                 continue
             return pages, err
         if err.startswith("http_") and proxy_enabled() and attempt + 1 < tries:
+            print(
+                f"proxy {attempt + 1}/{tries} {proxy_label(used or proxy)} "
+                f"{err} → next",
+                flush=True,
+            )
             mark_bad(used or proxy, reason=err)
             rotate_proxy()
             last_err = err
             continue
+        if attempt > 0 and not err:
+            print(f"proxy {attempt + 1}/{tries} {proxy_label(used or proxy)} OK", flush=True)
         return pages, err
     short = last_err
     if "407" in short:
         short = "proxy_407_whitelist?"
     elif len(short) > 120:
         short = short[:120]
+    print(f"proxy: исчерпаны {tries} попыток ({short}) — следующая фирма", flush=True)
     return {}, short
 
 

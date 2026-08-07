@@ -453,7 +453,8 @@ def _run_source(
         print(prefix, summary(updated))
         db.save_payload(updated)
 
-        # Companium/Checko: 3 капчи/прокси-фейла подряд → стоп источника
+        # Companium/Checko: много фирм подряд только капча → пул сдох, стоп источника.
+        # Порог выше: одна фирма уже крутит десятки прокси, 3 подряд — слишком рано.
         if apply in (apply_companium, apply_checko) and (
             "recaptcha" in err.lower()
             or "captcha" in err.lower()
@@ -462,9 +463,9 @@ def _run_source(
             or err in {"429", "http_429", "proxy_exhausted"}
         ):
             captcha_streak += 1
-            if captcha_streak >= 3:
+            if captcha_streak >= 12:
                 print(
-                    f"  → {name}: капча/прокси {captcha_streak}× подряд — стоп. "
+                    f"  → {name}: капча/прокси {captcha_streak}× фирм подряд — стоп. "
                     "Проверьте whitelist IP или ENRICH_PROXY_LIST_URL."
                 )
                 break

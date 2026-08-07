@@ -16,9 +16,10 @@ from .proxy_pool import (
     current_proxy,
     is_proxy_dead_error,
     mark_bad,
-    max_tries,
     proxy_enabled,
+    proxy_label,
     rotate_proxy,
+    suggested_tries,
 )
 
 BASE = "https://checko.ru"
@@ -122,10 +123,11 @@ def fetch_checko(*, ogrn: str = "", inn: str = "") -> CheckoReport:
 
     url = f"{BASE}/company/{ogrn}"
     report = CheckoReport(inn=inn, ogrn=ogrn, url=url)
-    tries = max_tries() if proxy_enabled() else 1
+    tries = suggested_tries() if proxy_enabled() else 1
     last_err = "proxy_exhausted"
-    for _attempt in range(tries):
+    for attempt in range(tries):
         proxy = current_proxy() if proxy_enabled() else None
+        tag = proxy_label(proxy)
         session = make_session(
             {
                 "Accept": "text/html,application/xhtml+xml",
@@ -138,6 +140,7 @@ def fetch_checko(*, ogrn: str = "", inn: str = "") -> CheckoReport:
             r = http_get(session, url, timeout=35)
         except Exception as e:  # noqa: BLE001
             if proxy_enabled() and is_proxy_dead_error(e):
+                print(f"proxy {attempt + 1}/{tries} {tag} dead → next", flush=True)
                 mark_bad(proxy or session_proxy_url(session), reason=str(e))
                 rotate_proxy()
                 last_err = str(e)
@@ -150,6 +153,10 @@ def fetch_checko(*, ogrn: str = "", inn: str = "") -> CheckoReport:
         used = session_proxy_url(session) or proxy
         if code == 429 or "captcha_required" in (html or "").lower():
             if proxy_enabled():
+                print(
+                    f"proxy {attempt + 1}/{tries} {proxy_label(used)} captcha_429 → next",
+                    flush=True,
+                )
                 mark_bad(used, reason="captcha_429")
                 rotate_proxy()
                 last_err = "captcha_429"
@@ -161,6 +168,10 @@ def fetch_checko(*, ogrn: str = "", inn: str = "") -> CheckoReport:
             return report
         if code >= 400:
             if proxy_enabled():
+                print(
+                    f"proxy {attempt + 1}/{tries} {proxy_label(used)} http_{code} → next",
+                    flush=True,
+                )
                 mark_bad(used, reason=f"http_{code}")
                 rotate_proxy()
                 last_err = f"http_{code}"
@@ -171,12 +182,18 @@ def fetch_checko(*, ogrn: str = "", inn: str = "") -> CheckoReport:
             html or ""
         ).lower():
             if proxy_enabled():
+                print(
+                    f"proxy {attempt + 1}/{tries} {proxy_label(used)} recaptcha_v2 → next",
+                    flush=True,
+                )
                 mark_bad(used, reason="recaptcha_v2")
                 rotate_proxy()
                 last_err = "recaptcha_v2"
                 continue
             report.error = "recaptcha_v2"
             return report
+        if attempt > 0:
+            print(f"proxy {attempt + 1}/{tries} {proxy_label(used)} OK", flush=True)
         _parse(html or "", report)
         if (
             report.court_cases is None
@@ -185,6 +202,7 @@ def fetch_checko(*, ogrn: str = "", inn: str = "") -> CheckoReport:
         ):
             report.error = "parse_empty"
         return report
+    print(f"proxy: исчерпаны {tries} попыток ({last_err}) — следующая фирма", flush=True)
     report.error = last_err
     return report
 
