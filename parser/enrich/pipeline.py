@@ -401,8 +401,11 @@ def _run_source(
     err_key: str,
     summary: Callable[[dict[str, Any]], str],
 ) -> None:
-    candidates = [p for p in payloads if pick(p)][:limit]
-    print(f"{name}: {len(candidates)} шт")
+    picked = [p for p in payloads if pick(p)]
+    # limit<=0 — без потолка (все дыры за один проход источника)
+    candidates = picked if limit <= 0 else picked[:limit]
+    print(f"{name}: {len(candidates)} шт" + ("" if limit <= 0 else f" (лимит {limit})"))
+
     captcha_streak = 0
     for i, p in enumerate(candidates, 1):
         key = p.get("inn") or p.get("ogrn") or p.get("name")
