@@ -44,15 +44,17 @@ def _strip_html(html: str) -> str:
 
 
 def _has_captcha(html: str) -> bool:
+    """Companium anti-bot: Google reCAPTCHA v2 + форма /check/humaneness."""
     low = html.lower()
     return any(
         x in low
         for x in (
+            "g-recaptcha",
+            "recaptcha.net",
+            "check/humaneness",
+            "подтвердите, что вы человек",
             "smartcaptcha",
-            "checkboxcaptcha",
-            "captcha",
             "я не робот",
-            "подтвердите, что вы не робот",
         )
     )
 
@@ -265,15 +267,15 @@ def fetch_companium(*, ogrn: str = "", inn: str = "") -> CompaniumReport:
 
     pages, err = _fetch_http(ogrn)
     report.source = "http"
-    if err == "captcha" or (err == "" and not pages.get("main")):
+    if err in {"recaptcha_v2", "captcha"} or (err == "" and not pages.get("main")):
         pages, err = _fetch_playwright(ogrn)
         report.source = "playwright"
 
-    if err and not pages.get("main"):
+    if err and err.startswith("recaptcha"):
         report.error = err
         return report
-    if err == "captcha":
-        report.error = "captcha"
+    if err and not pages.get("main"):
+        report.error = err
         return report
 
     main = pages.get("main") or ""
