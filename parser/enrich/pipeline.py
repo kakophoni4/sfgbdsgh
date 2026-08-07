@@ -906,8 +906,13 @@ def enrich_zsk_bot_db(
     limit: int = 0,
     pause: float = 3.0,
 ) -> dict[str, int]:
-    """Пакетный опрос @zskbenefitsarbot одним Telethon-клиентом."""
+    """Пакетный опрос @zskbenefitsarbot одним Telethon-клиентом.
+
+    Важно: вызывается из async_main (уже есть event loop) — поэтому
+    asyncio.run() в отдельном потоке, иначе RuntimeError / зависание.
+    """
     import asyncio
+    from concurrent.futures import ThreadPoolExecutor
 
     from parser.dedup import unique_only
     from parser.enrich.zsk_bot import (
@@ -917,13 +922,14 @@ def enrich_zsk_bot_db(
     )
     from tg_client import make_client
 
+    print("ЗСК-бот: подбор кандидатов...", flush=True)
     payloads = unique_only(db.all_payloads())
     candidates = [p for p in payloads if needs_zsk_bot(p)]
     if limit > 0:
         candidates = candidates[:limit]
 
     stats = {"zsk_bot_ok": 0, "zsk_bot_err": 0, "attempted": 0}
-    print(f"ЗСК-бот: {len(candidates)} шт")
+    print(f"ЗСК-бот: {len(candidates)} шт", flush=True)
     if not candidates:
         return stats
 
@@ -958,11 +964,13 @@ def enrich_zsk_bot_db(
                 pass
 
     async def _run() -> list:
+        print("ЗСК-бот: connect Telethon...", flush=True)
         client = make_client()
         await client.connect()
         try:
             if not await client.is_user_authorized():
-                raise RuntimeError("not_authorized")
+                raise RuntimeError("not_authorized — python telegram_login.py")
+            print(f"ЗСК-бот: диалог @{('zskbenefitsarbot')}", flush=True)
             return await enrich_zsk_bot_async(
                 candidates,
                 client,
@@ -972,10 +980,14 @@ def enrich_zsk_bot_db(
         finally:
             await client.disconnect()
 
+    def _thread_runner() -> list:
+        return asyncio.run(_run())
+
     try:
-        results = asyncio.run(_run())
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            results = pool.submit(_thread_runner).result()
     except Exception as e:  # noqa: BLE001
-        print(f"ERR {e}")
+        print(f"ERR {e}", flush=True)
         stats["zsk_bot_err"] = len(candidates)
         stats["attempted"] = len(candidates)
         return stats
@@ -986,9 +998,9 @@ def enrich_zsk_bot_db(
         db.save_payload(updated)
         if report.level in {"green", "yellow", "red"} and not report.error:
             stats["zsk_bot_ok"] += 1
-            print(f"OK {report.level} ({report.label})")
+            print(f"OK {report.level} ({report.label})", flush=True)
         else:
             stats["zsk_bot_err"] += 1
-            print(f"ERR {report.error or report.level or 'unknown'}")
+            print(f"ERR {report.error or report.level or 'unknown'}", flush=True)
 
     return stats

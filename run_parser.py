@@ -255,15 +255,24 @@ async def async_main(args: argparse.Namespace) -> None:
 
         if do_enrich:
             from parser.enrich import enrich_db
+            from parser.enrich.pipeline import enrich_zsk_bot_db
 
-            print(f"Источники обогащения: {sources}")
-            result = enrich_db(
-                db,
-                limit=args.enrich_limit,
-                pause=args.enrich_pause,
-                sources=sources,
-            )
-            print(f"Обогащение: {result}")
+            print(f"Источники обогащения: {sources}", flush=True)
+            # ЗСК-бот отдельно: Telethon + свой event loop в потоке
+            if sources == ["zsk_bot"]:
+                result = enrich_zsk_bot_db(
+                    db,
+                    limit=args.enrich_limit,
+                    pause=args.enrich_pause if args.enrich_pause is not None else 3.0,
+                )
+            else:
+                result = enrich_db(
+                    db,
+                    limit=args.enrich_limit,
+                    pause=args.enrich_pause,
+                    sources=sources,
+                )
+            print(f"Обогащение: {result}", flush=True)
 
         export_from_db(db, to_gsheets=to_sheets, to_apps_script=to_apps)
 
