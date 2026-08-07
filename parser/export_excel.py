@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.worksheet import Worksheet
 
 # Без букв A–X в шапке — понятные названия для заказчика
 HEADERS = [
@@ -31,6 +34,7 @@ HEADERS = [
     "Приостановки (вручную)",
     "Отчётность сдана",
     "Лизинг / залоги",
+    "Первое появление в чате",
     "Дата проверки",
     "Итог: брать или нет",
     "Ссылка на объявление",
@@ -228,6 +232,7 @@ def row_from_payload(p: dict[str, Any]) -> list[Any]:
         t_hint or "не сказано в посте",
         _human_flag("U_reports_filed", checklist.get("U_reports_filed")) or "нет данных",
         _v_cell(checklist) or "нет данных",
+        (p.get("listing_first_seen") or p.get("msg_date") or "")[:10],
         enrich.get("checked_at") or p.get("msg_date") or "",
         scoring.get("summary") or "нет оценки — запустите --rescore",
         p.get("link") or "",
@@ -249,72 +254,131 @@ def row_from_payload(p: dict[str, Any]) -> list[Any]:
     ]
 
 
-def export_xlsx(
-    payloads: list[dict[str, Any]],
-    path: Path,
-    *,
-    skip_duplicates: bool = True,
-) -> Path:
-    if skip_duplicates:
-        payloads = [p for p in payloads if not p.get("is_duplicate")]
+_WIDTHS = {
+    1: 28,
+    2: 14,
+    3: 14,
+    4: 12,
+    6: 36,
+    7: 14,
+    12: 22,
+    15: 18,
+    16: 14,
+    19: 24,
+    24: 48,
+    25: 28,
+    26: 16,
+    33: 56,
+    39: 28,
+    40: 40,
+}
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Чек-лист"
 
+def _first_seen_day(p: dict[str, Any]) -> str:
+    """YYYY-MM-DD первого появления в чате (для листов)."""
+    raw = p.get("listing_first_seen") or p.get("msg_date") or ""
+    if not raw:
+        return "без-даты"
+    try:
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        return dt.date().isoformat()
+    except Exception:
+        return str(raw)[:10] if len(str(raw)) >= 10 else "без-даты"
+
+
+def _sheet_title(day: str) -> str:
+    """Имя листа Excel <=31 символ: 07.08.2026."""
+    if day == "без-даты":
+        return "без даты"
+    try:
+        y, m, d = day.split("-")
+        return f"{d}.{m}.{y}"
+    except Exception:
+        return day[:31]
+
+
+def _write_sheet(ws: Worksheet, payloads: list[dict[str, Any]]) -> None:
     header_font = Font(bold=True)
     for col, title in enumerate(HEADERS, 1):
         cell = ws.cell(1, col, title)
         cell.font = header_font
         cell.alignment = Alignment(wrap_text=True, vertical="top")
 
-    # индексы для подсветки (1-based): ЗСК=19, Итог=24
-    for r, p in enumerate(payloads, 2):
+    # внутри дня: выше балл сверху
+    rows = sorted(
+        payloads,
+        key=lambda p: int((p.get("scoring") or {}).get("score") or 0),
+        reverse=True,
+    )
+    for r, p in enumerate(rows, 2):
         values = row_from_payload(p)
         for c, val in enumerate(values, 1):
             cell = ws.cell(r, c, val)
             cell.alignment = Alignment(wrap_text=True, vertical="top")
 
         zsk = p.get("zsk_claim") or ""
+        # ЗСК / Итог: индексы сдвинулись (+1 колонка «Первое появление»)
         if zsk in ZSK_FILL:
             ws.cell(r, 19).fill = ZSK_FILL[zsk]
         verdict = (p.get("scoring") or {}).get("verdict")
         if verdict in VERDICT_FILL:
-            ws.cell(r, 24).fill = VERDICT_FILL[verdict]
+            ws.cell(r, 25).fill = VERDICT_FILL[verdict]
 
-    widths = {
-        1: 28,
-        2: 14,
-        3: 14,
-        4: 12,
-        6: 36,
-        7: 14,
-        12: 22,
-        15: 18,
-        16: 14,
-        19: 24,
-        24: 48,
-        25: 28,
-        26: 16,
-        33: 56,
-        39: 28,
-        40: 40,
-    }
     for i in range(1, len(HEADERS) + 1):
-        ws.column_dimensions[get_column_letter(i)].width = widths.get(i, 14)
+        ws.column_dimensions[get_column_letter(i)].width = _WIDTHS.get(i, 14)
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = (
-        f"A1:{get_column_letter(len(HEADERS))}{max(1, len(payloads) + 1)}"
+        f"A1:{get_column_letter(len(HEADERS))}{max(1, len(rows) + 1)}"
     )
+
+
+def export_xlsx(
+    payloads: list[dict[str, Any]],
+    path: Path,
+    *,
+    skip_duplicates: bool = True,
+    by_first_seen_day: bool = True,
+) -> Path:
+    if skip_duplicates:
+        payloads = [p for p in payloads if not p.get("is_duplicate")]
+
+    wb = Workbook()
+    # убрать дефолтный лист — пересоздадим
+    default = wb.active
+
+    if by_first_seen_day:
+        groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for p in payloads:
+            groups[_first_seen_day(p)].append(p)
+        # слева свежие (новые даты), справа старые
+        days = sorted(groups.keys(), reverse=True)
+        first = True
+        for day in days:
+            title = _sheet_title(day)
+            # уникальность имени листа
+            base, n = title, 2
+            while title in wb.sheetnames:
+                title = f"{base}_{n}"[:31]
+                n += 1
+            if first:
+                ws = default
+                ws.title = title
+                first = False
+            else:
+                ws = wb.create_sheet(title)
+            _write_sheet(ws, groups[day])
+        if not days:
+            default.title = "пусто"
+            _write_sheet(default, [])
+    else:
+        default.title = "Все лоты"
+        _write_sheet(default, payloads)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         wb.save(path)
         return path
     except PermissionError:
-        # файл открыт в Excel — пишем рядом с меткой времени
-        from datetime import datetime
-
         alt = path.with_name(
             f"{path.stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{path.suffix}"
         )

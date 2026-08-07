@@ -8,7 +8,8 @@
 #   powershell -ExecutionPolicy Bypass -File deploy\fresh_run.ps1 -Limit 400 -EnrichLimit 80
 
 param(
-    [int]$Limit = 400,
+    [int]$Limit = 8000,
+    [int]$SinceDays = 30,
     [int]$EnrichLimit = 80,
     [switch]$SkipUpdate,
     [switch]$SkipEnrich
@@ -59,8 +60,8 @@ Get-ChildItem $data -Filter "checklist_export_*.xlsx" -ErrorAction SilentlyConti
 Write-Host "==> Check .env"
 & $venvPy -c "from config import ENRICH_PROXY_LIST_URL, ENRICH_PROXY, ENRICH_PAUSE, ENRICH_LIMIT; print('LIST_URL', bool(ENRICH_PROXY_LIST_URL)); print('SINGLE_PROXY', bool(ENRICH_PROXY)); print('PAUSE', ENRICH_PAUSE, 'LIMIT', ENRICH_LIMIT)"
 
-Write-Host "==> Scrape last $Limit messages"
-& $venvPy run_parser.py --limit $Limit
+Write-Host "==> Scrape last $SinceDays days (cap $Limit msgs)"
+& $venvPy run_parser.py --limit $Limit --since-days $SinceDays
 if ($LASTEXITCODE -ne 0) { throw "scrape failed: $LASTEXITCODE" }
 
 if (-not $SkipEnrich) {

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from telethon import TelegramClient, events
 from telethon.tl.custom.message import Message
@@ -26,6 +26,14 @@ def _msg_date(msg: Message) -> str:
     return msg.date.isoformat()
 
 
+def _as_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 async def process_message(msg: Message, db: ListingDB, chat_id: int) -> int:
     text = (msg.message or "").strip()
     if not text:
@@ -47,17 +55,35 @@ async def scrape_history(
     client: TelegramClient,
     db: ListingDB,
     chat_ids: list[int] | None = None,
-    limit: int = HISTORY_LIMIT,
+    limit: int | None = HISTORY_LIMIT,
+    since_days: int | None = None,
 ) -> dict:
+    """Тянет историю чата. since_days — только сообщения за последние N дней (с обрывом)."""
     chat_ids = chat_ids or CHAT_IDS
     total_msgs = 0
     total_listings = 0
+    skipped_old = 0
+
+    cutoff = None
+    if since_days is not None and since_days > 0:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
+
+    # за месяц сообщений может быть много — без жёсткого лимита, пока не упрёмся в cutoff
+    iter_limit = limit
+    if cutoff is not None and (limit is None or limit < 5000):
+        iter_limit = max(limit or 0, 8000)
 
     for chat_id in chat_ids:
         entity = await client.get_entity(chat_id)
         title = getattr(entity, "title", None) or str(chat_id)
-        print(f"Сканирую: {title} ({chat_id}), limit={limit}")
-        async for msg in client.iter_messages(entity, limit=limit):
+        extra = f", last {since_days}d" if cutoff else f", limit={iter_limit}"
+        print(f"Сканирую: {title} ({chat_id}){extra}")
+        async for msg in client.iter_messages(entity, limit=iter_limit):
+            msg_dt = _as_utc(getattr(msg, "date", None))
+            if cutoff is not None and msg_dt is not None and msg_dt < cutoff:
+                skipped_old += 1
+                # лента от новых к старым — дальше только старше
+                break
             total_msgs += 1
             n = await process_message(msg, db, chat_id)
             total_listings += n
@@ -68,6 +94,7 @@ async def scrape_history(
     print(
         f"Готово: msgs={total_msgs}, новых/обновлённых лотов за проход≈{total_listings}, "
         f"в базе={stats['total']} (с ИНН={stats['with_inn']}, вердикт ДА={stats['verdict_yes']})"
+        + (f", останов по дате (+{skipped_old} старше cutoff)" if cutoff else "")
     )
     return {"messages": total_msgs, "listings_seen": total_listings, **stats}
 

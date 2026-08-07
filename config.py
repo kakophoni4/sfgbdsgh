@@ -21,8 +21,10 @@ CHAT_IDS = [
     -1001909540858,  # Продажа компаний, готовые ООО
 ]
 
-# Сколько сообщений тянуть при backfill
+# Сколько сообщений тянуть при backfill (потолок; с --since-days режет по дате)
 HISTORY_LIMIT = int(os.getenv("HISTORY_LIMIT", "400"))
+# По умолчанию для fresh-прогонов можно задать в .env: SINCE_DAYS=30
+SINCE_DAYS = int(os.getenv("SINCE_DAYS", "0")) or None
 
 # Паузы обогащения: итого ~ ENRICH_PAUSE .. ENRICH_PAUSE+ENRICH_JITTER сек
 # При капче ЕГРЮЛ/БФО подними, например ENRICH_PAUSE=10 ENRICH_JITTER=5

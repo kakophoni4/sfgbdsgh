@@ -21,7 +21,14 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from config import DB_PATH, ENRICH_LIMIT, ENRICH_PAUSE, EXPORT_PATH, HISTORY_LIMIT
+from config import (
+    DB_PATH,
+    ENRICH_LIMIT,
+    ENRICH_PAUSE,
+    EXPORT_PATH,
+    HISTORY_LIMIT,
+    SINCE_DAYS,
+)
 from parser.db import ListingDB
 from parser.dedup import mark_duplicates, unique_only
 from parser.export_excel import export_xlsx
@@ -220,7 +227,12 @@ async def async_main(args: argparse.Namespace) -> None:
             if not await client.is_user_authorized():
                 raise SystemExit("Нет сессии. Сначала: python telegram_login.py")
             if do_scrape:
-                await scrape_history(client, db, limit=args.limit)
+                await scrape_history(
+                    client,
+                    db,
+                    limit=args.limit,
+                    since_days=getattr(args, "since_days", None),
+                )
 
         if do_enrich:
             from parser.enrich import enrich_db
@@ -252,7 +264,18 @@ def main() -> None:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
     ap = argparse.ArgumentParser(description="Парсер продажи ООО из Telegram")
-    ap.add_argument("--limit", type=int, default=HISTORY_LIMIT)
+    ap.add_argument(
+        "--limit",
+        type=int,
+        default=HISTORY_LIMIT,
+        help="макс. сообщений (с --since-days поднимается автоматически)",
+    )
+    ap.add_argument(
+        "--since-days",
+        type=int,
+        default=SINCE_DAYS,
+        help="брать сообщения только за последние N дней (напр. 30 = месяц)",
+    )
     ap.add_argument("--listen", action="store_true")
     ap.add_argument("--export-only", action="store_true")
     ap.add_argument("--rescore", action="store_true", help="пересчёт M/N/score без сети")
