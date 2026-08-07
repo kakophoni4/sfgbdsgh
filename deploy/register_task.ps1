@@ -25,7 +25,7 @@ if (-not (Test-Path $script)) {
 $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 $wasRunning = $existing -and ($existing.State -eq "Running")
 
-# -WindowStyle Hidden: без синего окна каждые 5 мин (лог всё равно в data\logs)
+# -WindowStyle Hidden: no blue window every 5 min (logs still in data\logs)
 $action = New-ScheduledTaskAction `
     -Execute "powershell.exe" `
     -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$script`"" `
@@ -57,26 +57,31 @@ $desc = "Firm parser: TG -> enrich(no limit) -> Excel/Sheets. Skip if running."
 
 $registered = $false
 if ($wasRunning) {
-    # Unregister/Register -Force убивает текущий прогон — обновляем на месте
+    # Unregister/Register -Force kills the current run - update in place
     Write-Host "WARN: FirmParser is Running - updating definition WITHOUT kill."
     try {
+        # Set-ScheduledTask has NO -Description parameter on Windows PowerShell 5.1
         Set-ScheduledTask `
             -TaskName $taskName `
             -Action $action `
             -Trigger $triggers `
             -Settings $settings `
-            -Principal $principal `
-            -Description $desc | Out-Null
+            -Principal $principal | Out-Null
         $registered = $true
     } catch {
+        Write-Host ("Set with Principal failed: " + $_.Exception.Message)
         Set-ScheduledTask `
             -TaskName $taskName `
             -Action $action `
             -Trigger $triggers `
-            -Settings $settings `
-            -Description $desc | Out-Null
+            -Settings $settings | Out-Null
         $registered = $true
     }
+    try {
+        $t = Get-ScheduledTask -TaskName $taskName
+        $t.Description = $desc
+        Set-ScheduledTask -InputObject $t | Out-Null
+    } catch {}
 } else {
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
     try {
