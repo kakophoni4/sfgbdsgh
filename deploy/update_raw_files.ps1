@@ -1,5 +1,4 @@
 # Emergency update: pull key Python files via raw.githubusercontent.com
-# Use if zip update script is broken on the server.
 #   powershell -ExecutionPolicy Bypass -File deploy\update_raw_files.ps1
 
 $ErrorActionPreference = "Stop"
@@ -8,8 +7,11 @@ $Base = "https://raw.githubusercontent.com/kakophoni4/sfgbdsgh/main"
 $files = @(
     "run_parser.py",
     "smoke_check.py",
+    "check_sources.py",
     "PLAN.md",
     "SERVER.md",
+    "config.py",
+    "requirements.txt",
     "parser/score.py",
     "parser/export_excel.py",
     "parser/enrich/pipeline.py",
@@ -18,11 +20,11 @@ $files = @(
     "parser/enrich/kad.py",
     "parser/enrich/kad_browser.py",
     "parser/enrich/companium.py",
+    "parser/enrich/checko.py",
+    "parser/enrich/saby.py",
     "parser/enrich/fssp.py",
-    "requirements.txt",
     "parser/enrich/fedresurs.py",
     "parser/enrich/unreliable.py",
-    "config.py",
     "parser/enrich/http_util.py",
     "deploy/update_from_github.ps1"
 )
@@ -38,4 +40,5 @@ foreach ($rel in $files) {
 }
 
 Write-Host "OK. Check:"
+Write-Host '  python check_sources.py'
 Write-Host '  python run_parser.py --help'

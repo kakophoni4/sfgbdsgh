@@ -11,6 +11,7 @@ from parser.db import ListingDB
 from parser.score import score_payload
 
 from .buh import checklist_from_buh, fetch_buh
+from .checko import checklist_from_checko, fetch_checko
 from .companium import checklist_from_companium, fetch_companium
 from .egrul import lookup_company, status_flags
 from .fedresurs import (
@@ -21,7 +22,48 @@ from .fedresurs import (
 )
 from .fssp import checklist_from_fssp, fetch_fssp
 from .kad import checklist_from_kad, fetch_kad
+from .saby import checklist_from_saby, fetch_saby
 from .unreliable import check_unreliable_from_egrul, checklist_from_unreliable
+
+_GAP = frozenset({"", "ПРОВЕРИТЬ"})
+
+
+def _is_gap(val: Any) -> bool:
+    return val is None or val in _GAP
+
+
+def _checklist_fill_gaps(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
+    """Дописать только пустые/ПРОВЕРИТЬ поля (запасные источники не затирают удачные)."""
+    out = dict(old)
+    groups = {
+        "P_court_cases": ("P_note", "P_link"),
+        "L_debts_il": ("L_note", "L_link"),
+        "I_reliable": ("I_note",),
+        "V_leases": ("V_note", "V_link"),
+        "O_clean": ("O_note", "O_link"),
+    }
+    for main, extras in groups.items():
+        if main not in new:
+            continue
+        cur = out.get(main)
+        nxt = new[main]
+        # O: можно «ухудшить» до есть банкротство/дисквал
+        o_upgrade = (
+            main == "O_clean"
+            and str(nxt).startswith("есть")
+            and not str(cur or "").startswith("есть")
+        )
+        if _is_gap(cur) or o_upgrade:
+            out[main] = nxt
+            for e in extras:
+                if e in new:
+                    out[e] = new[e]
+    for k, v in new.items():
+        if k.endswith("_url") or k.endswith("_error") or k.startswith("checko") or k.startswith(
+            "saby"
+        ) or k.startswith("companium"):
+            out[k] = v
+    return out
 
 
 def _now() -> str:
@@ -155,7 +197,12 @@ def apply_kad(payload: dict[str, Any], pause: float = 1.0) -> dict[str, Any]:
         return _merge_enrich(p, kad={"error": "no_inn"})
     report = fetch_kad(inn)
     _sleep(pause)
-    return _merge_enrich(p, kad=report.to_dict(), checklist=checklist_from_kad(report))
+    old = dict((p.get("enrich") or {}).get("checklist") or {})
+    return _merge_enrich(
+        p,
+        kad=report.to_dict(),
+        checklist=_checklist_fill_gaps(old, checklist_from_kad(report)),
+    )
 
 
 def apply_fssp(payload: dict[str, Any], pause: float = 1.0) -> dict[str, Any]:
@@ -165,27 +212,74 @@ def apply_fssp(payload: dict[str, Any], pause: float = 1.0) -> dict[str, Any]:
         return _merge_enrich(p, fssp={"error": "no_inn"})
     report = fetch_fssp(inn)
     _sleep(pause)
-    return _merge_enrich(p, fssp=report.to_dict(), checklist=checklist_from_fssp(report))
+    old = dict((p.get("enrich") or {}).get("checklist") or {})
+    return _merge_enrich(
+        p,
+        fssp=report.to_dict(),
+        checklist=_checklist_fill_gaps(old, checklist_from_fssp(report)),
+    )
+
+
+def _ogrn_of(p: dict[str, Any]) -> str:
+    ogrn = (p.get("ogrn") or "").strip()
+    if ogrn:
+        return ogrn
+    return str(((p.get("enrich") or {}).get("egrul") or {}).get("ogrn") or "").strip()
 
 
 def apply_companium(payload: dict[str, Any], pause: float = 1.0) -> dict[str, Any]:
     """P/L/I (+V soft) через companium.ru по ОГРН."""
     p = dict(payload)
-    ogrn = (p.get("ogrn") or "").strip()
-    if not ogrn:
-        ogrn = str(((p.get("enrich") or {}).get("egrul") or {}).get("ogrn") or "").strip()
-        if ogrn:
-            p["ogrn"] = ogrn
+    ogrn = _ogrn_of(p)
+    if ogrn:
+        p["ogrn"] = ogrn
     inn = (p.get("inn") or "").strip()
     if not ogrn:
         return _merge_enrich(p, companium={"error": "no_ogrn"})
 
     report = fetch_companium(ogrn=ogrn, inn=inn)
     _sleep(pause)
+    old = dict((p.get("enrich") or {}).get("checklist") or {})
     return _merge_enrich(
         p,
         companium=report.to_dict(),
-        checklist=checklist_from_companium(report),
+        checklist=_checklist_fill_gaps(old, checklist_from_companium(report)),
+    )
+
+
+def apply_checko(payload: dict[str, Any], pause: float = 1.0) -> dict[str, Any]:
+    """Запасной P/L/I/V через checko.ru (только дыры)."""
+    p = dict(payload)
+    ogrn = _ogrn_of(p)
+    if ogrn:
+        p["ogrn"] = ogrn
+    inn = (p.get("inn") or "").strip()
+    if not ogrn:
+        return _merge_enrich(p, checko={"error": "no_ogrn"})
+
+    report = fetch_checko(ogrn=ogrn, inn=inn)
+    _sleep(pause)
+    old = dict((p.get("enrich") or {}).get("checklist") or {})
+    return _merge_enrich(
+        p,
+        checko=report.to_dict(),
+        checklist=_checklist_fill_gaps(old, checklist_from_checko(report)),
+    )
+
+
+def apply_saby(payload: dict[str, Any], pause: float = 1.0) -> dict[str, Any]:
+    """Запасной I через saby.ru/profile/{inn}."""
+    p = dict(payload)
+    inn = (p.get("inn") or "").strip()
+    if not inn:
+        return _merge_enrich(p, saby={"error": "no_inn"})
+    report = fetch_saby(inn)
+    _sleep(pause)
+    old = dict((p.get("enrich") or {}).get("checklist") or {})
+    return _merge_enrich(
+        p,
+        saby=report.to_dict(),
+        checklist=_checklist_fill_gaps(old, checklist_from_saby(report)),
     )
 
 
@@ -207,25 +301,27 @@ def apply_fedresurs(payload: dict[str, Any], pause: float = 1.0) -> dict[str, An
     checklist = merge_o_disqualified(checklist, note, found)
 
     _sleep(pause)
+    old = dict(cl0)
     return _merge_enrich(
         p,
         fedresurs=report.to_dict(),
         disqualified={"found": found, "note": note, "director": director},
-        checklist=checklist,
+        checklist=_checklist_fill_gaps(old, checklist),
     )
 
 
 def apply_unreliable(payload: dict[str, Any], pause: float = 0.0) -> dict[str, Any]:
-    """I по уже сохранённому ЕГРЮЛ (без сети, если карточка есть)."""
+    """I по уже сохранённому ЕГРЮЛ (без сети) — только если I ещё пустой."""
     p = dict(payload)
     egrul = (p.get("enrich") or {}).get("egrul") or {}
     report = check_unreliable_from_egrul(egrul)
     if pause:
         _sleep(pause)
+    old = dict((p.get("enrich") or {}).get("checklist") or {})
     return _merge_enrich(
         p,
         unreliable=report.to_dict(),
-        checklist=checklist_from_unreliable(report),
+        checklist=_checklist_fill_gaps(old, checklist_from_unreliable(report)),
     )
 
 
@@ -292,6 +388,10 @@ def _run_source(
             src_block = enrich_u.get("fedresurs") or {}
         elif apply is apply_companium:
             src_block = enrich_u.get("companium") or {}
+        elif apply is apply_checko:
+            src_block = enrich_u.get("checko") or {}
+        elif apply is apply_saby:
+            src_block = enrich_u.get("saby") or {}
         else:
             src_block = enrich_u.get("unreliable") or {}
 
@@ -301,6 +401,8 @@ def _run_source(
             apply_fedresurs,
             apply_unreliable,
             apply_companium,
+            apply_checko,
+            apply_saby,
         )
         if src_block.get("error") and not soft_ok:
             stats[err_key] += 1
@@ -331,7 +433,15 @@ def enrich_db(
     if pause is None:
         pause = ENRICH_PAUSE
 
-    sources = sources or ["egrul", "buh", "companium", "fedresurs", "unreliable"]
+    sources = sources or [
+        "egrul",
+        "buh",
+        "companium",
+        "checko",
+        "fedresurs",
+        "saby",
+        "unreliable",
+    ]
     payloads = unique_only(db.all_payloads()) if unique_first else db.all_payloads()
 
     stats = {
@@ -345,8 +455,12 @@ def enrich_db(
         "fssp_err": 0,
         "companium_ok": 0,
         "companium_err": 0,
+        "checko_ok": 0,
+        "checko_err": 0,
         "fedresurs_ok": 0,
         "fedresurs_err": 0,
+        "saby_ok": 0,
+        "saby_err": 0,
         "unreliable_ok": 0,
         "unreliable_err": 0,
         "attempted": 0,
@@ -446,6 +560,37 @@ def enrich_db(
             )
             payloads = unique_only(db.all_payloads()) if unique_first else db.all_payloads()
 
+        if "checko" in sources:
+
+            def _pick_checko(p: dict[str, Any]) -> bool:
+                if not _ogrn_of(p):
+                    return False
+                cl = (p.get("enrich") or {}).get("checklist") or {}
+                return (
+                    _is_gap(cl.get("P_court_cases"))
+                    or _is_gap(cl.get("L_debts_il"))
+                    or _is_gap(cl.get("I_reliable"))
+                    or _is_gap(cl.get("V_leases"))
+                )
+
+            _run_source(
+                name="Checko",
+                payloads=payloads,
+                limit=limit,
+                pause=pause,
+                db=db,
+                stats=stats,
+                pick=_pick_checko,
+                apply=apply_checko,
+                ok_key="checko_ok",
+                err_key="checko_err",
+                summary=lambda u: (
+                    f"P={(u.get('enrich') or {}).get('checklist', {}).get('P_court_cases')} "
+                    f"L={(u.get('enrich') or {}).get('checklist', {}).get('L_debts_il')}"
+                ),
+            )
+            payloads = unique_only(db.all_payloads()) if unique_first else db.all_payloads()
+
         if "kad" in sources:
             def _pick_kad(p: dict[str, Any]) -> bool:
                 if not p.get("inn"):
@@ -509,6 +654,23 @@ def enrich_db(
             )
             payloads = unique_only(db.all_payloads()) if unique_first else db.all_payloads()
 
+        if "saby" in sources:
+            _run_source(
+                name="Saby",
+                payloads=payloads,
+                limit=limit,
+                pause=pause,
+                db=db,
+                stats=stats,
+                pick=lambda p: bool(p.get("inn"))
+                and _is_gap(((p.get("enrich") or {}).get("checklist") or {}).get("I_reliable")),
+                apply=apply_saby,
+                ok_key="saby_ok",
+                err_key="saby_err",
+                summary=lambda u: f"I={(u.get('enrich') or {}).get('checklist', {}).get('I_reliable')}",
+            )
+            payloads = unique_only(db.all_payloads()) if unique_first else db.all_payloads()
+
         if "unreliable" in sources:
             _run_source(
                 name="Недостоверки",
@@ -518,7 +680,7 @@ def enrich_db(
                 db=db,
                 stats=stats,
                 pick=lambda p: bool(((p.get("enrich") or {}).get("egrul") or {}).get("inn"))
-                and "I_reliable" not in ((p.get("enrich") or {}).get("checklist") or {}),
+                and _is_gap(((p.get("enrich") or {}).get("checklist") or {}).get("I_reliable")),
                 apply=apply_unreliable,
                 ok_key="unreliable_ok",
                 err_key="unreliable_err",

@@ -123,6 +123,14 @@ python run_parser.py --enrich-fedresurs --enrich-limit 20
 python run_parser.py --export-only
 ```
 
+## Проверка всех источников
+
+```powershell
+python check_sources.py
+```
+
+Цепочки: P/L — Companium→Checko→КАД/ФССП; I — Companium→Checko→Saby→ЕГРЮЛ; O — Федресурс.
+
 ## Companium (P / L / I без КАД)
 
 Обход заблокированного КАД/ФССП: карточка `https://companium.ru/id/{ОГРН}`.

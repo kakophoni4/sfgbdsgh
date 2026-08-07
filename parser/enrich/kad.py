@@ -167,6 +167,8 @@ def fetch_kad(inn: str) -> KadReport:
 
 def checklist_from_kad(report: KadReport) -> dict[str, Any]:
     if report.error:
+        # не затираем удачные значения из Companium/Checko на уровне apply (gaps),
+        # но если вызывают напрямую — мягкий ПРОВЕРИТЬ
         return {
             "P_court_cases": "ПРОВЕРИТЬ",
             "P_note": f"КАД недоступен: {report.error}",

@@ -117,7 +117,15 @@ def export_from_db(db: ListingDB) -> Path:
 
 def resolve_sources(args: argparse.Namespace) -> list[str]:
     if getattr(args, "enrich_core", False):
-        return ["egrul", "buh", "companium", "fedresurs", "unreliable"]
+        return [
+            "egrul",
+            "buh",
+            "companium",
+            "checko",
+            "fedresurs",
+            "saby",
+            "unreliable",
+        ]
 
     explicit = []
     if args.enrich_egrul:
@@ -126,6 +134,10 @@ def resolve_sources(args: argparse.Namespace) -> list[str]:
         explicit.append("buh")
     if args.enrich_companium:
         explicit.append("companium")
+    if args.enrich_checko:
+        explicit.append("checko")
+    if args.enrich_saby:
+        explicit.append("saby")
     if args.enrich_kad:
         explicit.append("kad")
     if args.enrich_fssp:
@@ -140,8 +152,15 @@ def resolve_sources(args: argparse.Namespace) -> list[str]:
     if args.enrich or args.enrich_only:
         if explicit:
             return explicit
-        # ядро: без КАД/ФССП (их закрывает Companium)
-        return ["egrul", "buh", "companium", "fedresurs", "unreliable"]
+        return [
+            "egrul",
+            "buh",
+            "companium",
+            "checko",
+            "fedresurs",
+            "saby",
+            "unreliable",
+        ]
     return []
 
 
@@ -158,6 +177,8 @@ async def async_main(args: argparse.Namespace) -> None:
         or args.enrich_fedresurs
         or args.enrich_unreliable
         or args.enrich_companium
+        or args.enrich_checko
+        or args.enrich_saby
         or getattr(args, "enrich_core", False)
     )
     do_scrape = True
@@ -241,12 +262,22 @@ def main() -> None:
     ap.add_argument(
         "--enrich-companium",
         action="store_true",
-        help="Companium.ru → P/L/I (по ОГРН, обход КАД/ФССП)",
+        help="Companium.ru → P/L/I (по ОГРН)",
+    )
+    ap.add_argument(
+        "--enrich-checko",
+        action="store_true",
+        help="Checko.ru запасной → P/L/I/V",
+    )
+    ap.add_argument(
+        "--enrich-saby",
+        action="store_true",
+        help="Saby/СБИС запасной → I",
     )
     ap.add_argument(
         "--enrich-core",
         action="store_true",
-        help="ядро: ЕГРЮЛ+БФО+Companium+Федресурс+I",
+        help="ядро + запасные: ЕГРЮЛ БФО Companium Checko Федресурс Saby",
     )
     ap.add_argument("--enrich-limit", type=int, default=ENRICH_LIMIT)
     ap.add_argument("--enrich-pause", type=float, default=None)
