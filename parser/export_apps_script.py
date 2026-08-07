@@ -120,12 +120,13 @@ def is_sheet_worthy(p: dict[str, Any]) -> bool:
 
 
 def _short_verdict(p: dict[str, Any]) -> str:
+    """Полный текст итога — не режем до 220 символов."""
     sc = p.get("scoring") or {}
+    summary = _flat(sc.get("summary") or "", 4000)
+    if summary:
+        return summary
     v = (sc.get("verdict") or "").strip()
-    summary = _flat(sc.get("summary") or "", 220)
-    if v and summary:
-        return f"{v}: {summary}"
-    return v or summary or "нет оценки"
+    return v or "нет оценки"
 
 
 def sheet_row(p: dict[str, Any]) -> list[Any]:
