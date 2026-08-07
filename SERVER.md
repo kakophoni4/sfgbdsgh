@@ -119,6 +119,7 @@ cd C:\firmy
 ```powershell
 python run_parser.py --rescore
 python run_parser.py --enrich-kad --enrich-fssp --enrich-limit 20
+python run_parser.py --enrich-fedresurs --enrich-limit 20
 python run_parser.py --export-only
 ```
 

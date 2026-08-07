@@ -78,6 +78,18 @@ def main() -> None:
             f"source={buh.source}"
         )
 
+    print("\n=== Федресурс lookup (Сбер) ===")
+    from parser.enrich.fedresurs import fetch_fedresurs
+
+    fr = fetch_fedresurs("7707083893")
+    if fr.error:
+        print(f"  ERR {fr.error}")
+    else:
+        print(
+            f"  OK {fr.name} bankrupt={fr.is_bankrupt} status={fr.status!r} "
+            f"lease={fr.lease_note or fr.lease_hits}"
+        )
+
     print("\nГотово. Если ЕГРЮЛ/БФО = OK — сервер подходит.")
 
 

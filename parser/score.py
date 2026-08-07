@@ -177,6 +177,36 @@ def score_payload(p: dict[str, Any]) -> dict:
         score -= 2
         risks.append("КАД не проверен автоматически")
 
+    if buh_cl.get("I_reliable") == "ДА":
+        score += 4
+        reasons.append("недостоверок в карточке ЕГРЮЛ не видно")
+    elif buh_cl.get("I_reliable") == "НЕТ":
+        score -= 25
+        risks.append("недостоверные сведения в ЕГРЮЛ")
+    elif buh_cl.get("I_reliable") == "ПРОВЕРИТЬ":
+        score -= 2
+        risks.append("достоверность не подтверждена")
+
+    if buh_cl.get("O_clean") == "ДА":
+        score += 6
+        reasons.append("банкротства/ЕФРСБ не видно")
+    elif buh_cl.get("O_clean") == "НЕТ":
+        score -= 40
+        risks.append("банкротство / дисквал / санкционный риск (O)")
+    elif buh_cl.get("O_clean") == "ПРОВЕРИТЬ":
+        score -= 3
+        risks.append("O (ЕФРСБ/дисквал) не проверен")
+
+    if buh_cl.get("V_leases") == "НЕТ":
+        score += 3
+        reasons.append("лизинг/залоги в Федресурсе не найдены")
+    elif buh_cl.get("V_leases") == "ЕСТЬ":
+        score -= 8
+        risks.append("есть лизинг/залоги (Федресурс)")
+    elif buh_cl.get("V_leases") == "ПРОВЕРИТЬ":
+        score -= 1
+        risks.append("V (лизинг) не проверен")
+
     if p.get("has_account_claim") == "no":
         score -= 5
         risks.append("без расчётного счёта")
@@ -212,9 +242,13 @@ def score_payload(p: dict[str, Any]) -> dict:
 
     score = max(0, min(100, score))
 
-    hard_no = zsk == "red" or checklist.get("M_not_liquidating") == "НЕТ" or checklist.get(
-        "N_not_excluding"
-    ) == "НЕТ"
+    hard_no = (
+        zsk == "red"
+        or checklist.get("M_not_liquidating") == "НЕТ"
+        or checklist.get("N_not_excluding") == "НЕТ"
+        or checklist.get("O_clean") == "НЕТ"
+        or checklist.get("I_reliable") == "НЕТ"
+    )
 
     if hard_no:
         verdict = "НЕТ"

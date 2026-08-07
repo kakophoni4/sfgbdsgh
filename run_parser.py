@@ -4,6 +4,7 @@
 Примеры:
   python run_parser.py --enrich-only --enrich-limit 20
   python run_parser.py --enrich-kad --enrich-fssp --enrich-limit 20
+  python run_parser.py --enrich-fedresurs --enrich-limit 20
   python run_parser.py --rescore
   python run_parser.py --export-only
 """
@@ -52,6 +53,28 @@ def selftest() -> None:
     assert status_flags("1")["status"] == "действующая"
     assert status_flags("1")["M"] == "ДА"
     print("status_flags OK")
+
+    from parser.enrich.fedresurs import FedresursReport, checklist_from_fedresurs
+    from parser.enrich.unreliable import check_unreliable_from_egrul, checklist_from_unreliable
+
+    cl_o = checklist_from_fedresurs(
+        FedresursReport(
+            inn="9710056741",
+            status="введено наблюдение (банкротство)",
+            is_bankrupt=True,
+            lease_hits=None,
+            lease_note="blocked",
+        )
+    )
+    assert cl_o["O_clean"] == "НЕТ"
+    assert cl_o["V_leases"] == "ПРОВЕРИТЬ"
+    cl_i = checklist_from_unreliable(
+        check_unreliable_from_egrul(
+            {"inn": "1", "address": "г. Москва, сведения недостоверны", "error": ""}
+        )
+    )
+    assert cl_i["I_reliable"] == "НЕТ"
+    print("O/I checklist OK")
     if not ok:
         raise SystemExit("selftest failed")
     print("selftest OK")
@@ -80,13 +103,17 @@ def resolve_sources(args: argparse.Namespace) -> list[str]:
         explicit.append("kad")
     if args.enrich_fssp:
         explicit.append("fssp")
+    if args.enrich_fedresurs:
+        explicit.append("fedresurs")
+    if args.enrich_unreliable:
+        explicit.append("unreliable")
 
     if explicit and not args.enrich and not args.enrich_only:
         return explicit
     if args.enrich or args.enrich_only:
         if explicit:
             return explicit
-        return ["egrul", "buh", "kad", "fssp"]
+        return ["egrul", "buh", "kad", "fssp", "fedresurs", "unreliable"]
     return []
 
 
@@ -96,7 +123,12 @@ async def async_main(args: argparse.Namespace) -> None:
     sources = resolve_sources(args)
     do_enrich = bool(sources)
     only_flags = bool(
-        args.enrich_buh or args.enrich_egrul or args.enrich_kad or args.enrich_fssp
+        args.enrich_buh
+        or args.enrich_egrul
+        or args.enrich_kad
+        or args.enrich_fssp
+        or args.enrich_fedresurs
+        or args.enrich_unreliable
     )
     do_scrape = True
     if args.export_only or args.enrich_only or args.rescore:
@@ -166,6 +198,16 @@ def main() -> None:
     ap.add_argument("--enrich-buh", action="store_true")
     ap.add_argument("--enrich-kad", action="store_true", help="арбитраж КАД → P")
     ap.add_argument("--enrich-fssp", action="store_true", help="ФССП → L")
+    ap.add_argument(
+        "--enrich-fedresurs",
+        action="store_true",
+        help="Федресурс/ЕФРСБ → O, лизинг → V",
+    )
+    ap.add_argument(
+        "--enrich-unreliable",
+        action="store_true",
+        help="недостоверки ЕГРЮЛ → I (без сети, по карточке)",
+    )
     ap.add_argument("--enrich-limit", type=int, default=ENRICH_LIMIT)
     ap.add_argument("--enrich-pause", type=float, default=None)
     ap.add_argument("--selftest", action="store_true")

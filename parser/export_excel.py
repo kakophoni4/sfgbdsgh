@@ -16,7 +16,7 @@ HEADERS = [
     "F Регистрация (+адрес)",
     "G ОСНО/СНО",
     "H Рег до 2024",
-    "I Достоверность (вручную/ФНС)",
+    "I Достоверность (ЕГРЮЛ)",
     "J Первичка/1С (вручную)",
     "K Займы, кредиторка",
     "L Долги/ИЛ",
@@ -106,21 +106,21 @@ def row_from_payload(p: dict[str, Any]) -> list[Any]:
         f_cell,  # F from EGRUL (+ manual later)
         p.get("sno") or "",
         scoring.get("reg_before_2024") or "",
-        "",  # I
+        checklist.get("I_reliable") or "",
         j_hint,
         checklist.get("K_loans_payables") or "",
         checklist.get("L_debts_il")
         or ("продавец: без долгов" if p.get("no_debts_claim") else ""),
         checklist.get("M_not_liquidating") or "",
         checklist.get("N_not_excluding") or "",
-        "",  # O
+        checklist.get("O_clean") or "",
         checklist.get("P_court_cases") or "",
         q_hint,
         checklist.get("R_turnover") or scoring.get("has_turnover_flag") or "",
         _zsk_cell(p.get("zsk_claim") or ""),
         t_hint,
         checklist.get("U_reports_filed") or "",
-        "",  # V
+        checklist.get("V_leases") or "",
         enrich.get("checked_at") or p.get("msg_date") or "",
         scoring.get("summary") or "",
         p.get("link") or "",

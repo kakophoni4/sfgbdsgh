@@ -12,8 +12,15 @@ from parser.score import score_payload
 
 from .buh import checklist_from_buh, fetch_buh
 from .egrul import lookup_company, status_flags
+from .fedresurs import (
+    checklist_from_fedresurs,
+    fetch_disqualified,
+    fetch_fedresurs,
+    merge_o_disqualified,
+)
 from .fssp import checklist_from_fssp, fetch_fssp
 from .kad import checklist_from_kad, fetch_kad
+from .unreliable import check_unreliable_from_egrul, checklist_from_unreliable
 
 
 def _now() -> str:
@@ -75,6 +82,7 @@ def apply_egrul(payload: dict[str, Any], pause: float = 1.8) -> dict[str, Any]:
         p["okved"] = rec.okved
 
     flags = status_flags(rec.status)
+    egrul_dict = rec.to_dict()
     checklist = {
         "F_address": rec.address,
         "F_director": rec.director,
@@ -84,7 +92,8 @@ def apply_egrul(payload: dict[str, Any], pause: float = 1.8) -> dict[str, Any]:
         "status": flags["status"],
         "kpp": rec.kpp,
     }
-    return _merge_enrich(p, egrul=rec.to_dict(), checklist=checklist)
+    checklist.update(checklist_from_unreliable(check_unreliable_from_egrul(egrul_dict)))
+    return _merge_enrich(p, egrul=egrul_dict, checklist=checklist)
 
 
 def apply_buh(payload: dict[str, Any], pause: float = 1.0) -> dict[str, Any]:
@@ -120,8 +129,48 @@ def apply_fssp(payload: dict[str, Any], pause: float = 1.0) -> dict[str, Any]:
     return _merge_enrich(p, fssp=report.to_dict(), checklist=checklist_from_fssp(report))
 
 
+def apply_fedresurs(payload: dict[str, Any], pause: float = 1.0) -> dict[str, Any]:
+    """O (банкрот/дисквал) + V (лизинг) через Федресурс + мягкий дисквал ФНС."""
+    p = dict(payload)
+    inn = (p.get("inn") or "").strip()
+    if not inn:
+        return _merge_enrich(p, fedresurs={"error": "no_inn"})
+
+    report = fetch_fedresurs(inn)
+    checklist = checklist_from_fedresurs(report)
+
+    director = ""
+    enrich = p.get("enrich") or {}
+    cl0 = enrich.get("checklist") or {}
+    director = str(cl0.get("F_director") or (enrich.get("egrul") or {}).get("director") or "")
+    found, note = fetch_disqualified(director)
+    checklist = merge_o_disqualified(checklist, note, found)
+
+    _sleep(pause)
+    return _merge_enrich(
+        p,
+        fedresurs=report.to_dict(),
+        disqualified={"found": found, "note": note, "director": director},
+        checklist=checklist,
+    )
+
+
+def apply_unreliable(payload: dict[str, Any], pause: float = 0.0) -> dict[str, Any]:
+    """I по уже сохранённому ЕГРЮЛ (без сети, если карточка есть)."""
+    p = dict(payload)
+    egrul = (p.get("enrich") or {}).get("egrul") or {}
+    report = check_unreliable_from_egrul(egrul)
+    if pause:
+        _sleep(pause)
+    return _merge_enrich(
+        p,
+        unreliable=report.to_dict(),
+        checklist=checklist_from_unreliable(report),
+    )
+
+
 def rescore_db(db: ListingDB) -> dict[str, int]:
-    """Пересчёт M/N/status и score по уже сохранённым enrich (без сети)."""
+    """Пересчёт M/N/I/status и score по уже сохранённым enrich (без сети)."""
     fixed = 0
     for p in db.all_payloads():
         enrich = p.get("enrich") or {}
@@ -132,6 +181,7 @@ def rescore_db(db: ListingDB) -> dict[str, int]:
             cl["M_not_liquidating"] = flags["M"]
             cl["N_not_excluding"] = flags["N"]
             cl["status"] = flags["status"]
+            cl.update(checklist_from_unreliable(check_unreliable_from_egrul(egrul)))
             # поправить и в egrul.status если был "1"
             if str(egrul.get("status") or "") in {"1", "0", "-"}:
                 egrul = dict(egrul)
@@ -165,17 +215,22 @@ def _run_source(
         print(f"  [{name} {i}/{len(candidates)}] {key} ...", end=" ", flush=True)
         updated = apply(p, pause)
         stats["attempted"] += 1
+        enrich_u = updated.get("enrich") or {}
         if apply is apply_egrul:
-            src_block = (updated.get("enrich") or {}).get("egrul") or {}
+            src_block = enrich_u.get("egrul") or {}
         elif apply is apply_buh:
-            src_block = (updated.get("enrich") or {}).get("buh") or {}
+            src_block = enrich_u.get("buh") or {}
         elif apply is apply_kad:
-            src_block = (updated.get("enrich") or {}).get("kad") or {}
+            src_block = enrich_u.get("kad") or {}
+        elif apply is apply_fssp:
+            src_block = enrich_u.get("fssp") or {}
+        elif apply is apply_fedresurs:
+            src_block = enrich_u.get("fedresurs") or {}
         else:
-            src_block = (updated.get("enrich") or {}).get("fssp") or {}
+            src_block = enrich_u.get("unreliable") or {}
 
-        # kad/fssp при ошибке всё равно пишут ПРОВЕРИТЬ в checklist
-        if src_block.get("error") and apply not in (apply_kad, apply_fssp):
+        soft_ok = apply in (apply_kad, apply_fssp, apply_fedresurs, apply_unreliable)
+        if src_block.get("error") and not soft_ok:
             stats[err_key] += 1
             print(f"ERR {src_block.get('error')}")
             db.save_payload(updated)
@@ -204,7 +259,7 @@ def enrich_db(
     if pause is None:
         pause = ENRICH_PAUSE
 
-    sources = sources or ["egrul", "buh", "kad", "fssp"]
+    sources = sources or ["egrul", "buh", "kad", "fssp", "fedresurs", "unreliable"]
     payloads = unique_only(db.all_payloads()) if unique_first else db.all_payloads()
 
     stats = {
@@ -216,6 +271,10 @@ def enrich_db(
         "kad_err": 0,
         "fssp_ok": 0,
         "fssp_err": 0,
+        "fedresurs_ok": 0,
+        "fedresurs_err": 0,
+        "unreliable_ok": 0,
+        "unreliable_err": 0,
         "attempted": 0,
     }
 
@@ -303,6 +362,43 @@ def enrich_db(
                 ok_key="fssp_ok",
                 err_key="fssp_err",
                 summary=lambda u: f"L={(u.get('enrich') or {}).get('checklist', {}).get('L_debts_il')}",
+            )
+            payloads = unique_only(db.all_payloads()) if unique_first else db.all_payloads()
+
+        if "fedresurs" in sources:
+            _run_source(
+                name="Федресурс",
+                payloads=payloads,
+                limit=limit,
+                pause=pause,
+                db=db,
+                stats=stats,
+                pick=lambda p: bool(p.get("inn"))
+                and "O_clean" not in ((p.get("enrich") or {}).get("checklist") or {}),
+                apply=apply_fedresurs,
+                ok_key="fedresurs_ok",
+                err_key="fedresurs_err",
+                summary=lambda u: (
+                    f"O={(u.get('enrich') or {}).get('checklist', {}).get('O_clean')} "
+                    f"V={(u.get('enrich') or {}).get('checklist', {}).get('V_leases')}"
+                ),
+            )
+            payloads = unique_only(db.all_payloads()) if unique_first else db.all_payloads()
+
+        if "unreliable" in sources:
+            _run_source(
+                name="Недостоверки",
+                payloads=payloads,
+                limit=limit,
+                pause=0.0,
+                db=db,
+                stats=stats,
+                pick=lambda p: bool(((p.get("enrich") or {}).get("egrul") or {}).get("inn"))
+                and "I_reliable" not in ((p.get("enrich") or {}).get("checklist") or {}),
+                apply=apply_unreliable,
+                ok_key="unreliable_ok",
+                err_key="unreliable_err",
+                summary=lambda u: f"I={(u.get('enrich') or {}).get('checklist', {}).get('I_reliable')}",
             )
     except StopIteration:
         pass
