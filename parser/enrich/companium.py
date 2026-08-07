@@ -101,6 +101,15 @@ def _parse_main(html: str, report: CompaniumReport) -> None:
     if m:
         report.enforcements = int(m.group(1))
 
+    # Федресурс / сообщения (для колонки V) — счётчик на главной
+    m = re.search(
+        r"Федресурс\s*<span class=\"count\">(\d+)</span>",
+        html,
+        re.I,
+    )
+    if m:
+        report.fedresurs_msgs = int(m.group(1))
+
     m = re.search(
         r"были рассмотрены\s*<a[^>]*>\s*([\d\s]+)\s*арбитражн",
         low,
@@ -118,6 +127,10 @@ def _parse_main(html: str, report: CompaniumReport) -> None:
     title = re.search(r"<title>([^<]+)", html)
     if title:
         report.name = title.group(1).split("–")[0].strip()
+
+    # мягкий V с текста главной, если счётчика не было
+    if report.fedresurs_msgs is None:
+        _parse_fed(html, report)
 
 
 def _parse_legal(html: str, report: CompaniumReport) -> None:
@@ -150,14 +163,26 @@ def _parse_enf(html: str, report: CompaniumReport) -> None:
 
 def _parse_fed(html: str, report: CompaniumReport) -> None:
     text = _strip_html(html).lower()
-    if "не опубликовала и не является участником ни одно" in text:
+    empty_marks = (
+        "не опубликовала и не является участником ни одно",
+        "ни одного сообщения",
+        "сообщений не найдено",
+        "сообщений нет",
+        "нет сообщений на федресурс",
+        "не найдено ни одного сообщения",
+    )
+    if any(x in text for x in empty_marks):
         report.fedresurs_msgs = 0
         return
-    if "ни одного сообщения" in text or "сообщений не найдено" in text:
-        report.fedresurs_msgs = 0
+    m = re.search(
+        r"федресурс[^.]{0,40}?(\d[\d\s]{0,10})\s+сообщен",
+        text,
+    )
+    if m:
+        report.fedresurs_msgs = int(re.sub(r"\s+", "", m.group(1)))
         return
     m = re.search(r"([\d\s]{1,10})\s+сообщен", text)
-    if m:
+    if m and "федресурс" in text:
         report.fedresurs_msgs = int(re.sub(r"\s+", "", m.group(1)))
 
 

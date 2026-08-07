@@ -191,9 +191,12 @@ def checklist_from_fedresurs(report: FedresursReport) -> dict[str, Any]:
         out["O_clean"] = "нет банкротства"
         out["O_note"] = f"статус: {report.status or 'действующее'}"
 
+    # 451/капча на /publications — НЕ ставим V=ПРОВЕРИТЬ (иначе затирает
+    # «нет лизинга» с Companium/Checko). Только O + ссылка; V оставляем дырой
+    # или уже заполненным агрегаторами.
     if report.lease_hits is None:
-        out["V_leases"] = "ПРОВЕРИТЬ"
-        out["V_note"] = report.lease_note or "публикации недоступны"
+        out["V_note"] = report.lease_note or "публикации Федресурса недоступны (451)"
+        # V_leases намеренно не трогаем
     elif report.lease_hits > 0:
         out["V_leases"] = "есть лизинг/залоги"
         out["V_note"] = report.lease_note

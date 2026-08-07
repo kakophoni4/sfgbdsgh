@@ -98,14 +98,20 @@ def _parse(html: str, report: CheckoReport) -> None:
             if m:
                 report.enforcements = int(re.sub(r"\s+", "", m.group(1)))
 
-    # V soft
+    # V soft (лизинг/залоги через блок Федресурс)
     if re.search(
-        r"федресурс.{0,80}(не опубликован|не является участником|сообщений нет|не найдено)",
+        r"федресурс.{0,120}(не опубликован|не является участником|сообщений нет|"
+        r"не найдено|ни одного сообщения|сообщений не найдено)",
         low,
     ):
         report.fedresurs_empty = True
+    elif re.search(r"федресурс\s*0\b", low) or re.search(
+        r"федресурс.{0,40}\b0\s+сообщен", low
+    ):
+        report.fedresurs_empty = True
     elif "федресурс" in low and re.search(r"(\d+)\s+сообщен", low):
-        report.fedresurs_empty = False
+        n = int(re.sub(r"\s+", "", re.search(r"(\d[\d\s]*)\s+сообщен", low).group(1)))
+        report.fedresurs_empty = n == 0
 
 
 def fetch_checko(*, ogrn: str = "", inn: str = "") -> CheckoReport:
@@ -183,40 +189,9 @@ def fetch_checko(*, ogrn: str = "", inn: str = "") -> CheckoReport:
     return report
 
 
-def human_checko(report: CheckoReport) -> str:
-    """Короткая сводка для лога (без букв P/L)."""
-    if report.error and report.court_cases is None and report.enforcements is None:
-        return f"Checko недоступен: {report.error}"
-    parts: list[str] = []
-    if report.court_cases is not None:
-        parts.append(
-            "суды: нет дел"
-            if report.court_cases == 0
-            else f"суды: {report.court_cases} дел"
-        )
-    if report.enforcements is not None:
-        parts.append(
-            "долги ФССП: нет"
-            if report.enforcements == 0
-            else f"долги ФССП: {report.enforcements} пр."
-        )
-    if report.unreliable is False:
-        parts.append("недостоверки: нет")
-    elif report.unreliable is True:
-        parts.append("недостоверки: ЕСТЬ")
-    if report.fedresurs_empty is True:
-        parts.append("федресурс: пусто")
-    elif report.fedresurs_empty is False:
-        parts.append("федресурс: есть сообщения")
-    return "; ".join(parts) if parts else "данных мало"
-
-
 def checklist_from_checko(report: CheckoReport) -> dict[str, Any]:
     """Только заполненные поля — чтобы не затирать удачные значения других источников."""
-    out: dict[str, Any] = {
-        "checko_url": report.url or f"{BASE}/company/{report.ogrn}",
-        "checko_dossier": human_checko(report),
-    }
+    out: dict[str, Any] = {"checko_url": report.url or f"{BASE}/company/{report.ogrn}"}
     if report.error and report.court_cases is None and report.enforcements is None:
         out["checko_error"] = report.error
         return out
