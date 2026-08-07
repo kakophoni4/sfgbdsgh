@@ -13,7 +13,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from .http_util import http_get, make_session
+from .http_util import http_get, make_session, proxy_playwright
 
 BASE = "https://companium.ru"
 
@@ -324,7 +324,8 @@ def _fetch_http(ogrn: str) -> tuple[dict[str, str], str]:
         {
             "Accept": "text/html,application/xhtml+xml",
             "Referer": f"{BASE}/",
-        }
+        },
+        use_proxy=True,
     )
     pages: dict[str, str] = {}
     main_url = f"{BASE}/id/{ogrn}"
@@ -362,7 +363,11 @@ def _fetch_playwright(ogrn: str) -> tuple[dict[str, str], str]:
                 headless=True,
                 args=["--disable-blink-features=AutomationControlled"],
             )
-            context = browser.new_context(locale="ru-RU")
+            ctx_kwargs: dict[str, Any] = {"locale": "ru-RU"}
+            pw_proxy = proxy_playwright()
+            if pw_proxy:
+                ctx_kwargs["proxy"] = pw_proxy
+            context = browser.new_context(**ctx_kwargs)
             page = context.new_page()
             url = f"{BASE}/id/{ogrn}"
             page.goto(url, wait_until="domcontentloaded", timeout=60000)

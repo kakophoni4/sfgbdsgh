@@ -5,6 +5,7 @@ from urllib.parse import quote, urlparse, urlunparse
 
 
 def _proxy_url() -> str:
+    """Только ENRICH_PROXY — не подхватываем системный HTTP_PROXY на все сайты."""
     try:
         from config import ENRICH_PROXY
 
@@ -12,11 +13,7 @@ def _proxy_url() -> str:
     except Exception:
         import os
 
-        return (
-            os.getenv("ENRICH_PROXY", "").strip()
-            or os.getenv("HTTPS_PROXY", "").strip()
-            or os.getenv("HTTP_PROXY", "").strip()
-        )
+        return os.getenv("ENRICH_PROXY", "").strip()
 
 
 def _normalize_proxy(url: str) -> str:
@@ -44,8 +41,35 @@ def proxy_dict() -> dict[str, str] | None:
     return {"http": raw, "https": raw}
 
 
-def make_session(base_headers: dict[str, str] | None = None):
-    """curl_cffi (Chrome) → httpx → requests."""
+def proxy_playwright() -> dict[str, str] | None:
+    """Настройки прокси для Playwright (Companium browser fallback)."""
+    raw = _proxy_url()
+    if not raw:
+        return None
+    if "://" not in raw:
+        raw = "http://" + raw
+    p = urlparse(raw)
+    if not p.hostname:
+        return None
+    server = f"{p.scheme or 'http'}://{p.hostname}" + (f":{p.port}" if p.port else "")
+    out: dict[str, str] = {"server": server}
+    if p.username:
+        out["username"] = p.username
+    if p.password:
+        out["password"] = p.password
+    return out
+
+
+def make_session(
+    base_headers: dict[str, str] | None = None,
+    *,
+    use_proxy: bool = False,
+):
+    """curl_cffi (Chrome) → httpx → requests.
+
+    use_proxy=True — только для Companium/Checko (ENRICH_PROXY).
+    Остальные источники ходят напрямую.
+    """
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -58,7 +82,7 @@ def make_session(base_headers: dict[str, str] | None = None):
     if base_headers:
         headers.update(base_headers)
 
-    proxies = proxy_dict()
+    proxies = proxy_dict() if use_proxy else None
 
     try:
         from curl_cffi import requests as crequests  # type: ignore
@@ -119,16 +143,11 @@ def http_get(
     if params:
         kwargs["params"] = params
     engine = getattr(session, "_engine", "")
-    proxies = proxy_dict()
     if engine == "curl_cffi":
         kwargs["impersonate"] = getattr(session, "_impersonate", "chrome124")
         kwargs["allow_redirects"] = allow_redirects
-        if proxies and not getattr(session, "proxies", None):
-            kwargs["proxies"] = proxies
     elif engine == "httpx":
         kwargs["follow_redirects"] = allow_redirects
     else:
         kwargs["allow_redirects"] = allow_redirects
-        if proxies:
-            kwargs.setdefault("proxies", proxies)
     return session.get(url, **kwargs)

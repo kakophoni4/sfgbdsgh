@@ -112,7 +112,8 @@ def fetch_checko(*, ogrn: str = "", inn: str = "") -> CheckoReport:
         {
             "Accept": "text/html,application/xhtml+xml",
             "Referer": f"{BASE}/",
-        }
+        },
+        use_proxy=True,
     )
     try:
         r = http_get(session, url, timeout=35)
