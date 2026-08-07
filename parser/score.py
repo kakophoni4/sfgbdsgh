@@ -21,6 +21,47 @@ def score_listing(listing: Listing, enrich: dict | None = None) -> dict:
     return score_payload(listing.to_dict() | ({"enrich": enrich} if enrich else {}))
 
 
+def _flag(checklist: dict, key: str) -> str:
+    """ok | bad | check | '' — с учётом старых ДА/НЕТ и новых фраз в БД."""
+    raw = str(checklist.get(key) or "").strip()
+    if not raw:
+        return ""
+    low = raw.lower()
+    if "провер" in low:
+        return "check"
+    if key == "O_clean":
+        if low in {"да", "нет банкротства"}:
+            return "ok"
+        if low == "нет" or low.startswith("есть"):
+            return "bad"
+        return ""
+    if key == "L_debts_il":
+        if low in {"да", "нет долгов/ил"}:
+            return "ok"
+        if low in {"нет", "есть долги/ил"}:
+            return "bad"
+        return ""
+    if key == "P_court_cases":
+        if low in {"нет", "нет дел"}:
+            return "ok"
+        if low in {"есть", "есть дела"}:
+            return "bad"
+        return ""
+    if key == "V_leases":
+        if low in {"нет", "нет лизинга/залогов"}:
+            return "ok"
+        if low in {"есть", "есть лизинг/залоги"}:
+            return "bad"
+        return ""
+    if key in {"M_not_liquidating", "N_not_excluding", "I_reliable"}:
+        if low == "да":
+            return "ok"
+        if low == "нет":
+            return "bad"
+        return ""
+    return ""
+
+
 def score_payload(p: dict[str, Any]) -> dict:
     """
     Эвристическая оценка по объявлению + (опционально) ЕГРЮЛ.
@@ -156,54 +197,59 @@ def score_payload(p: dict[str, Any]) -> dict:
             score -= 2
             risks.append("есть займы/кредиторка по БФО")
 
-    # L / P из ФССП / КАД
-    if buh_cl.get("L_debts_il") == "ДА":
+    # L / P / I / O / V
+    fl = _flag(buh_cl, "L_debts_il")
+    if fl == "ok":
         score += 6
         reasons.append("ФССП: долгов/ИЛ не видно")
-    elif buh_cl.get("L_debts_il") == "НЕТ":
+    elif fl == "bad":
         score -= 20
         risks.append("ФССП: есть исполнительные производства")
-    elif buh_cl.get("L_debts_il") == "ПРОВЕРИТЬ":
+    elif fl == "check":
         score -= 2
         risks.append("ФССП не проверен автоматически")
 
-    if buh_cl.get("P_court_cases") == "НЕТ":
+    fp = _flag(buh_cl, "P_court_cases")
+    if fp == "ok":
         score += 6
         reasons.append("КАД: дел не найдено")
-    elif buh_cl.get("P_court_cases") == "ЕСТЬ":
+    elif fp == "bad":
         score -= 12
         risks.append("КАД: есть арбитражные дела")
-    elif buh_cl.get("P_court_cases") == "ПРОВЕРИТЬ":
+    elif fp == "check":
         score -= 2
         risks.append("КАД не проверен автоматически")
 
-    if buh_cl.get("I_reliable") == "ДА":
+    fi = _flag(buh_cl, "I_reliable")
+    if fi == "ok":
         score += 4
         reasons.append("недостоверок в карточке ЕГРЮЛ не видно")
-    elif buh_cl.get("I_reliable") == "НЕТ":
+    elif fi == "bad":
         score -= 25
         risks.append("недостоверные сведения в ЕГРЮЛ")
-    elif buh_cl.get("I_reliable") == "ПРОВЕРИТЬ":
+    elif fi == "check":
         score -= 2
         risks.append("достоверность не подтверждена")
 
-    if buh_cl.get("O_clean") == "ДА":
+    fo = _flag(buh_cl, "O_clean")
+    if fo == "ok":
         score += 6
-        reasons.append("банкротства/ЕФРСБ не видно")
-    elif buh_cl.get("O_clean") == "НЕТ":
+        reasons.append("нет банкротства (Федресурс)")
+    elif fo == "bad":
         score -= 40
-        risks.append("банкротство / дисквал / санкционный риск (O)")
-    elif buh_cl.get("O_clean") == "ПРОВЕРИТЬ":
+        risks.append("банкротство / дисквал (O)")
+    elif fo == "check":
         score -= 3
-        risks.append("O (ЕФРСБ/дисквал) не проверен")
+        risks.append("O (банкротство) не проверен")
 
-    if buh_cl.get("V_leases") == "НЕТ":
+    fv = _flag(buh_cl, "V_leases")
+    if fv == "ok":
         score += 3
-        reasons.append("лизинг/залоги в Федресурсе не найдены")
-    elif buh_cl.get("V_leases") == "ЕСТЬ":
+        reasons.append("нет лизинга/залогов в Федресурсе")
+    elif fv == "bad":
         score -= 8
         risks.append("есть лизинг/залоги (Федресурс)")
-    elif buh_cl.get("V_leases") == "ПРОВЕРИТЬ":
+    elif fv == "check":
         score -= 1
         risks.append("V (лизинг) не проверен")
 
@@ -244,10 +290,10 @@ def score_payload(p: dict[str, Any]) -> dict:
 
     hard_no = (
         zsk == "red"
-        or checklist.get("M_not_liquidating") == "НЕТ"
-        or checklist.get("N_not_excluding") == "НЕТ"
-        or checklist.get("O_clean") == "НЕТ"
-        or checklist.get("I_reliable") == "НЕТ"
+        or _flag(checklist, "M_not_liquidating") == "bad"
+        or _flag(checklist, "N_not_excluding") == "bad"
+        or _flag(checklist, "O_clean") == "bad"
+        or _flag(checklist, "I_reliable") == "bad"
     )
 
     if hard_no:

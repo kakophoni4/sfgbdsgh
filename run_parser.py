@@ -5,6 +5,7 @@
   python run_parser.py --enrich-only --enrich-limit 20
   python run_parser.py --enrich-kad --enrich-fssp --enrich-limit 20
   python run_parser.py --enrich-fedresurs --enrich-limit 20
+  python run_parser.py --enrich-core --enrich-limit 40
   python run_parser.py --rescore
   python run_parser.py --export-only
 """
@@ -66,8 +67,12 @@ def selftest() -> None:
             lease_note="blocked",
         )
     )
-    assert cl_o["O_clean"] == "НЕТ"
+    assert cl_o["O_clean"] == "есть банкротство"
     assert cl_o["V_leases"] == "ПРОВЕРИТЬ"
+    cl_ok = checklist_from_fedresurs(
+        FedresursReport(inn="1", status="Действующее", is_bankrupt=False, lease_hits=0)
+    )
+    assert cl_ok["O_clean"] == "нет банкротства"
     cl_i = checklist_from_unreliable(
         check_unreliable_from_egrul(
             {"inn": "1", "address": "г. Москва, сведения недостоверны", "error": ""}
@@ -94,6 +99,9 @@ def export_from_db(db: ListingDB) -> Path:
 
 
 def resolve_sources(args: argparse.Namespace) -> list[str]:
+    if getattr(args, "enrich_core", False):
+        return ["egrul", "buh", "fedresurs", "unreliable"]
+
     explicit = []
     if args.enrich_egrul:
         explicit.append("egrul")
@@ -113,7 +121,8 @@ def resolve_sources(args: argparse.Namespace) -> list[str]:
     if args.enrich or args.enrich_only:
         if explicit:
             return explicit
-        return ["egrul", "buh", "kad", "fssp", "fedresurs", "unreliable"]
+        # КАД/ФССП с сервера обычно ПРОВЕРИТЬ — в полный прогон не тащим по умолчанию
+        return ["egrul", "buh", "fedresurs", "unreliable"]
     return []
 
 
@@ -129,6 +138,7 @@ async def async_main(args: argparse.Namespace) -> None:
         or args.enrich_fssp
         or args.enrich_fedresurs
         or args.enrich_unreliable
+        or getattr(args, "enrich_core", False)
     )
     do_scrape = True
     if args.export_only or args.enrich_only or args.rescore:
@@ -207,6 +217,11 @@ def main() -> None:
         "--enrich-unreliable",
         action="store_true",
         help="недостоверки ЕГРЮЛ → I (без сети, по карточке)",
+    )
+    ap.add_argument(
+        "--enrich-core",
+        action="store_true",
+        help="рабочее ядро: ЕГРЮЛ+БФО+Федресурс+I (без КАД/ФССП)",
     )
     ap.add_argument("--enrich-limit", type=int, default=ENRICH_LIMIT)
     ap.add_argument("--enrich-pause", type=float, default=None)

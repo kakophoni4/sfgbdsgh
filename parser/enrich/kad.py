@@ -174,7 +174,7 @@ def checklist_from_kad(report: KadReport) -> dict[str, Any]:
         }
     n = report.cases_found or 0
     return {
-        "P_court_cases": "ЕСТЬ" if n > 0 else "НЕТ",
+        "P_court_cases": "есть дела" if n > 0 else "нет дел",
         "P_note": f"дел={n}"
         + (f"; примеры: {', '.join(report.sample or [])}" if report.sample else ""),
         "P_link": "https://kad.arbitr.ru/",

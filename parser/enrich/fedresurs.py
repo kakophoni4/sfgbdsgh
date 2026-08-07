@@ -185,21 +185,21 @@ def checklist_from_fedresurs(report: FedresursReport) -> dict[str, Any]:
         return out
 
     if report.is_bankrupt:
-        out["O_clean"] = "НЕТ"
+        out["O_clean"] = "есть банкротство"
         out["O_note"] = f"ЕФРСБ/Федресурс: {report.status or 'банкротство'}"
     else:
-        out["O_clean"] = "ДА"
-        out["O_note"] = f"банкротства не видно ({report.status or 'статус пуст'})"
+        out["O_clean"] = "нет банкротства"
+        out["O_note"] = f"статус: {report.status or 'действующее'}"
 
     if report.lease_hits is None:
         out["V_leases"] = "ПРОВЕРИТЬ"
         out["V_note"] = report.lease_note or "публикации недоступны"
     elif report.lease_hits > 0:
-        out["V_leases"] = "ЕСТЬ"
+        out["V_leases"] = "есть лизинг/залоги"
         out["V_note"] = report.lease_note
     else:
-        out["V_leases"] = "НЕТ"
-        out["V_note"] = report.lease_note or "лизинг/залог в публикациях не найден"
+        out["V_leases"] = "нет лизинга/залогов"
+        out["V_note"] = report.lease_note or "в публикациях не найдено"
 
     return out
 
@@ -208,7 +208,10 @@ def merge_o_disqualified(checklist: dict[str, Any], disc_note: str, found: bool 
     """Дополнить O результатом проверки дисквалификации директора."""
     cl = dict(checklist)
     if found is True:
-        cl["O_clean"] = "НЕТ"
+        if cl.get("O_clean") == "есть банкротство":
+            cl["O_clean"] = "есть банкротство/дисквал"
+        else:
+            cl["O_clean"] = "есть дисквал"
         prev = cl.get("O_note") or ""
         cl["O_note"] = (prev + "; " if prev else "") + disc_note
     elif found is False:
@@ -216,12 +219,8 @@ def merge_o_disqualified(checklist: dict[str, Any], disc_note: str, found: bool 
         if "дисквал" not in prev.lower():
             cl["O_note"] = (prev + "; " if prev else "") + "дисквал: не найден"
     else:
-        # неизвестно — не затираем ДА/НЕТ от банкротства, только пометка
         prev = cl.get("O_note") or ""
         cl["O_note"] = (prev + "; " if prev else "") + disc_note
-        if cl.get("O_clean") == "ДА":
-            # мягкий риск: оставляем ДА по банкротству, но можно понизить score отдельно
-            pass
     return cl
 
 

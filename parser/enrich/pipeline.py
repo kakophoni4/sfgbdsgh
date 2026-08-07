@@ -27,6 +27,44 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _flag_o_needs_retry(cl: dict[str, Any]) -> bool:
+    """Нет O, старые ДА/НЕТ, или ПРОВЕРИТЬ — имеет смысл перепробить Федресурс."""
+    o = cl.get("O_clean")
+    if not o:
+        return True
+    return o in {"ДА", "НЕТ", "ПРОВЕРИТЬ"}
+
+
+def _remap_checklist_labels(cl: dict[str, Any]) -> dict[str, Any]:
+    """Старые ДА/НЕТ → понятные фразы (без сети)."""
+    out = dict(cl)
+    o = out.get("O_clean")
+    if o == "ДА":
+        out["O_clean"] = "нет банкротства"
+    elif o == "НЕТ":
+        note = (out.get("O_note") or "").lower()
+        if "дисквал" in note and "банкрот" not in note:
+            out["O_clean"] = "есть дисквал"
+        else:
+            out["O_clean"] = "есть банкротство"
+    l = out.get("L_debts_il")
+    if l == "ДА":
+        out["L_debts_il"] = "нет долгов/ИЛ"
+    elif l == "НЕТ":
+        out["L_debts_il"] = "есть долги/ИЛ"
+    p = out.get("P_court_cases")
+    if p == "НЕТ":
+        out["P_court_cases"] = "нет дел"
+    elif p == "ЕСТЬ":
+        out["P_court_cases"] = "есть дела"
+    v = out.get("V_leases")
+    if v == "НЕТ":
+        out["V_leases"] = "нет лизинга/залогов"
+    elif v == "ЕСТЬ":
+        out["V_leases"] = "есть лизинг/залоги"
+    return out
+
+
 def _sleep(pause: float | None = None) -> float:
     base = ENRICH_PAUSE if pause is None else pause
     delay = max(0.5, base + random.uniform(0, max(0.0, ENRICH_JITTER)))
@@ -170,26 +208,30 @@ def apply_unreliable(payload: dict[str, Any], pause: float = 0.0) -> dict[str, A
 
 
 def rescore_db(db: ListingDB) -> dict[str, int]:
-    """Пересчёт M/N/I/status и score по уже сохранённым enrich (без сети)."""
+    """Пересчёт M/N/I/status, подписи O/L/P/V и score по уже сохранённым enrich (без сети)."""
     fixed = 0
     for p in db.all_payloads():
         enrich = p.get("enrich") or {}
         egrul = enrich.get("egrul") or {}
+        cl = _remap_checklist_labels(dict(enrich.get("checklist") or {}))
         if egrul.get("inn") and not egrul.get("error"):
             flags = status_flags(egrul.get("status") or "")
-            cl = dict(enrich.get("checklist") or {})
             cl["M_not_liquidating"] = flags["M"]
             cl["N_not_excluding"] = flags["N"]
             cl["status"] = flags["status"]
             cl.update(checklist_from_unreliable(check_unreliable_from_egrul(egrul)))
-            # поправить и в egrul.status если был "1"
             if str(egrul.get("status") or "") in {"1", "0", "-"}:
                 egrul = dict(egrul)
                 egrul["status"] = "действующая"
             p = _merge_enrich(p, egrul=egrul, checklist=cl)
             fixed += 1
         else:
-            p["scoring"] = score_payload(p)
+            if cl != (enrich.get("checklist") or {}):
+                p = _merge_enrich(p, checklist=cl)
+            else:
+                p["scoring"] = score_payload(p)
+            if cl.get("O_clean") or cl.get("L_debts_il") or cl.get("P_court_cases"):
+                fixed += 1
         db.save_payload(p)
     return {"rescored": fixed, "total": len(db.all_payloads())}
 
@@ -336,8 +378,8 @@ def enrich_db(
                 if not p.get("inn"):
                     return False
                 cl = (p.get("enrich") or {}).get("checklist") or {}
-                # повторяем, если ещё не было жёсткого ЕСТЬ/НЕТ (ПРОВЕРИТЬ после Playwright)
-                return cl.get("P_court_cases") not in ("ЕСТЬ", "НЕТ")
+                # повторяем, пока нет жёсткого ответа (ПРОВЕРИТЬ / пусто)
+                return cl.get("P_court_cases") not in ("ЕСТЬ", "НЕТ", "есть дела", "нет дел")
 
             _run_source(
                 name="КАД",
@@ -383,7 +425,7 @@ def enrich_db(
                 db=db,
                 stats=stats,
                 pick=lambda p: bool(p.get("inn"))
-                and "O_clean" not in ((p.get("enrich") or {}).get("checklist") or {}),
+                and _flag_o_needs_retry((p.get("enrich") or {}).get("checklist") or {}),
                 apply=apply_fedresurs,
                 ok_key="fedresurs_ok",
                 err_key="fedresurs_err",

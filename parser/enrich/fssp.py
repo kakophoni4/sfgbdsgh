@@ -78,13 +78,13 @@ def checklist_from_fssp(report: FsspReport) -> dict[str, Any]:
         return {"L_debts_il": "", "L_note": "нет ИНН", "L_link": link}
     if report.proceedings == 0:
         return {
-            "L_debts_il": "ДА",  # нет долгов по ИЛ — условие чек-листа «Нет долгов…»
+            "L_debts_il": "нет долгов/ИЛ",
             "L_note": "ФССП: производств не найдено",
             "L_link": link,
         }
     if report.proceedings and report.proceedings > 0:
         return {
-            "L_debts_il": "НЕТ",
+            "L_debts_il": "есть долги/ИЛ",
             "L_note": f"ФССП: найдено производств ≈{report.proceedings}",
             "L_link": link,
         }
