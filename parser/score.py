@@ -411,69 +411,141 @@ def _build_human_verdict(
     listing_days: int,
     listing_count: int,
 ) -> str:
-    """Итог для Excel: стоит ли смотреть компанию — по всем факторам."""
-    if verdict == "ДА":
-        head = f"СТОИТ СМОТРЕТЬ ({score}/100)"
-    elif verdict == "СОМНИТЕЛЬНО":
-        head = f"НА ПРОВЕРКУ ({score}/100) — не брать вслепую"
-    else:
-        head = f"ЛУЧШЕ НЕ БРАТЬ ({score}/100)"
-
-    bits: list[str] = [head, f"оценка: {label}; уверенность: {confidence}"]
-
-    name = (p.get("name") or checklist.get("B_name") or "").strip()
+    """Короткий вердикт живым языком — как записка аналитика, не дамп полей."""
+    name = (p.get("name") or checklist.get("B_name") or "Компания").strip()
     price = p.get("price_rub")
-    if name:
-        bits.append(f"лот: {name}")
-    if price:
-        bits.append(f"цена объявления: {price:,} ₽".replace(",", " "))
+    price_s = f"{price:,} ₽".replace(",", " ") if price else "цена не указана"
 
-    # реестр коротко
-    reg_bits = []
-    for key, title in (
-        ("P_court_cases", "суды"),
-        ("L_debts_il", "долги"),
-        ("O_clean", "банкротство"),
-        ("I_reliable", "недостоверки"),
-        ("V_leases", "федресурс"),
-        ("U_reports_filed", "отчётность"),
-    ):
-        v = checklist.get(key)
-        if v:
-            reg_bits.append(f"{title}: {v}")
-    if reg_bits:
-        bits.append("реестры: " + "; ".join(reg_bits[:6]))
-
-    if turn:
-        bits.append(f"обороты (оценка): ~{turn:,} ₽".replace(",", " "))
-    elif checklist.get("R_turnover"):
-        bits.append(f"обороты: {checklist.get('R_turnover')}")
-
-    if listing_count > 1 or listing_days > 0:
-        bits.append(
-            f"в чате продают: {listing_count} раз, охват ~{listing_days} дн."
-            + (
-                f" (с {(p.get('listing_first_seen') or '')[:10]})"
-                if p.get("listing_first_seen")
-                else ""
-            )
+    if verdict == "ДА":
+        lead = f"Беру в работу: {name} за {price_s}. Оценка {score} из 100 — лот выглядит интересным."
+    elif verdict == "СОМНИТЕЛЬНО":
+        lead = (
+            f"Пока на паузе: {name} за {price_s}. Оценка {score} из 100 — "
+            f"есть смысл смотреть, но без ручной проверки брать нельзя."
+        )
+    else:
+        lead = (
+            f"Скорее пропускаю: {name} за {price_s}. Оценка {score} из 100 — "
+            f"рисков или дыр в данных слишком много."
         )
 
-    dossier = (checklist.get("dossier") or "").strip()
-    if dossier:
-        bits.append("карточка: " + dossier[:220] + ("…" if len(dossier) > 220 else ""))
+    paras = [lead]
 
-    if reasons:
-        bits.append("плюсы: " + "; ".join(reasons[:6]))
-    if risks:
-        bits.append("риски: " + "; ".join(risks[:6]))
+    # Реестры — одним абзацем
+    clean: list[str] = []
+    dirty: list[str] = []
+    p_v = str(checklist.get("P_court_cases") or "")
+    l_v = str(checklist.get("L_debts_il") or "")
+    o_v = str(checklist.get("O_clean") or "")
+    i_v = str(checklist.get("I_reliable") or "")
+    v_v = str(checklist.get("V_leases") or "")
 
-    conf_note = {
-        "high": "данных достаточно для первичного отбора",
-        "medium": "есть пробелы — сверь вручную по ссылкам",
-        "low": "мало данных — только как черновик",
-    }.get(confidence, "")
-    if conf_note:
-        bits.append(conf_note)
+    if p_v in {"нет дел", "НЕТ"}:
+        clean.append("арбитражных дел не видно")
+    elif p_v in {"есть дела", "ЕСТЬ"}:
+        dirty.append("есть арбитраж")
+    if l_v in {"нет долгов/ИЛ", "ДА"}:
+        clean.append("по ФССП долгов не видно")
+    elif "есть долг" in l_v.lower() or l_v == "НЕТ":
+        dirty.append("есть долги или исполнительные листы")
+    if "нет банкрот" in o_v.lower() or o_v == "ДА":
+        clean.append("банкротства нет")
+    elif o_v.startswith("есть") or o_v == "НЕТ":
+        dirty.append("есть признаки банкротства или дисквала")
+    if i_v == "ДА":
+        clean.append("недостоверных сведений в ЕГРЮЛ не отмечено")
+    elif i_v == "НЕТ":
+        dirty.append("в ЕГРЮЛ есть отметка о недостоверности")
+    if "нет лизинг" in v_v.lower():
+        clean.append("лизинга и залогов не видно")
+    elif "есть записи" in v_v.lower() or "есть лизинг" in v_v.lower():
+        dirty.append("на Федресурсе есть записи — стоит открыть ссылку")
 
-    return " — ".join(bits)
+    reg_parts: list[str] = []
+    if clean:
+        reg_parts.append("По открытым реестрам картина спокойная: " + ", ".join(clean) + ".")
+    if dirty:
+        reg_parts.append("Настораживает: " + ", ".join(dirty) + ".")
+    if reg_parts:
+        paras.append(" ".join(reg_parts))
+
+    # Финансы / возраст
+    fin: list[str] = []
+    r_v = str(checklist.get("R_turnover") or "")
+    u_v = str(checklist.get("U_reports_filed") or "")
+    if turn and turn >= 500_000:
+        fin.append(f"по БФО обороты заметные (около {turn:,} ₽)".replace(",", " "))
+    elif r_v.startswith("есть"):
+        fin.append("в отчётности есть выручка выше 500 тыс.")
+    elif "выручка не указана" in r_v or r_v.startswith("мало"):
+        fin.append("отчётность есть, но живых оборотов почти не видно — похоже на нулёвку или «пустую» фирму")
+    elif r_v.startswith("нет данных") or not r_v:
+        fin.append("по финансам ФНС данных мало")
+    if u_v in {"ДА", "сдана"} and "отчётность" not in " ".join(fin):
+        fin.append("отчётность в базе ФНС сдана")
+
+    reg_year = p.get("reg_year")
+    if not reg_year and checklist.get("C_reg_date"):
+        import re
+
+        m = re.search(r"(20\d{2}|19\d{2})", str(checklist.get("C_reg_date")))
+        reg_year = int(m.group(1)) if m else None
+    if reg_year and reg_year >= 2024:
+        fin.append(f"компания молодая ({reg_year} год)")
+    elif reg_year and reg_year < 2024:
+        fin.append(f"зарегистрирована в {reg_year} — возраст нормальный")
+    if fin:
+        paras.append("По деньгам и возрасту: " + "; ".join(fin) + ".")
+
+    # Чат / продажа
+    if listing_count >= 4 or listing_days >= 14:
+        since = (p.get("listing_first_seen") or "")[:10]
+        since_bit = f" с {since}" if since else ""
+        paras.append(
+            f"В чате этот лот уже мелькал {listing_count} раз"
+            f" (около {listing_days} дн.{since_bit}) — продают активно, "
+            f"возможно, не уходит с первого раза."
+        )
+    elif listing_count >= 2:
+        paras.append(
+            f"Объявление повторялось в чате ({listing_count} раз) — не критично, но имейте в виду."
+        )
+    else:
+        paras.append("В выборке лот свежий, раньше почти не светился.")
+
+    # ЗСК и прочее из поста
+    zsk = p.get("zsk_claim") or "unknown"
+    post_bits: list[str] = []
+    if zsk == "green":
+        post_bits.append("продавец пишет про «зелёный» ЗСК")
+    elif zsk == "yellow":
+        post_bits.append("продавец указывает жёлтый ЗСК — осторожнее")
+    elif zsk == "red":
+        post_bits.append("продавец сам пишет про красный ЗСК — обычно это стоп")
+    if p.get("has_account_claim") == "no":
+        post_bits.append("в посте сказано, что без расчётного счёта")
+    elif p.get("has_account_claim") == "yes":
+        post_bits.append("в посте упоминается расчётный счёт")
+    if p.get("primary_1c_claim"):
+        post_bits.append("обещают первичку/1С")
+    if post_bits:
+        paras.append("Из объявления: " + "; ".join(post_bits) + ".")
+
+    # Итог одной фразой
+    if confidence == "high":
+        tail = "Данных достаточно, чтобы решить: смотреть дальше или нет."
+    elif confidence == "medium":
+        tail = "Картина собрана неплохо, но перед сделкой всё равно сверьте выписку, счета и комплект вручную."
+    else:
+        tail = "Пока это скорее черновик — не хватает ключевых данных для уверенного решения."
+
+    if verdict == "ДА" and any(
+        x in " ".join(risks).lower()
+        for x in ("молод", "оборот", "нулёв", "выручка не", "долго в продаж", "повторя")
+    ):
+        tail += " Несмотря на высокий балл, я бы уточнил обороты и причину продажи — на бумаге чисто, по сути может быть пустышка."
+    elif verdict == "НЕТ":
+        tail += " Если очень нужно — только после жёсткой ручной проверки."
+
+    paras.append(tail)
+    return " ".join(paras)
