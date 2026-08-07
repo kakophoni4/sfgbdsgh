@@ -682,20 +682,13 @@ def enrich_db(
                 )
                 if not ogrn:
                     return False
-                cl = (p.get("enrich") or {}).get("checklist") or {}
-                # пока P/L не стали осмысленными (или ещё ПРОВЕРИТЬ от КАД/ФССП)
-                p_ok = cl.get("P_court_cases") in ("есть дела", "нет дел", "ЕСТЬ", "НЕТ")
-                l_ok = cl.get("L_debts_il") in (
-                    "нет долгов/ИЛ",
-                    "есть долги/ИЛ",
-                    "ДА",
-                    "НЕТ",
-                )
-                # если уже от companium — не долбим
+                # Дыра = нет успешного отчёта Companium (колонка dossier пустая).
+                # Раньше смотрели только P/L — их мог закрыть Checko, а dossier
+                # оставался пустым и фирма больше не попадала в очередь.
                 src = ((p.get("enrich") or {}).get("companium") or {})
-                if src.get("ogrn") and not src.get("error") and p_ok and l_ok:
+                if src.get("ogrn") and not src.get("error"):
                     return False
-                return not (p_ok and l_ok)
+                return True
 
             _run_source(
                 name="Companium",
