@@ -165,6 +165,32 @@ def _name_query(name: str) -> str:
     return s
 
 
+def _norm_brand(s: str) -> str:
+    t = (s or "").upper().replace("Ё", "Е")
+    t = re.sub(r"(?i)^ООО\s*", "", t)
+    t = re.sub(r"[«»\"“”'.,\-—+]", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def _name_similar(query: str, candidate: str) -> bool:
+    """Не принимать чужой хит ЕГРЮЛ на запрос «Для связи @…» / частичное совпадение."""
+    a = _norm_brand(query)
+    b = _norm_brand(candidate)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    # бренд запроса целиком входит в ответ или наоборот (ООО ВЕКТА / ВЕКТА ПЛЮС)
+    if len(a) >= 4 and (a in b or b in a):
+        return True
+    # все слова запроса (от 3 букв) есть в ответе
+    words = [w for w in a.split() if len(w) >= 3]
+    if words and all(w in b for w in words):
+        return True
+    return False
+
+
 def lookup_company(
     *,
     inn: str = "",
@@ -172,7 +198,7 @@ def lookup_company(
     name: str = "",
     reg_year: int | None = None,
 ) -> EgrulRecord:
-    """ИНН/ОГРН — точно. Имя — только если однозначный хит (или год регистрации сужает)."""
+    """ИНН/ОГРН — точно. Имя — только похожий хит + год (если есть)."""
     for q, kind in ((inn, "inn"), (ogrn, "ogrn"), (name, "name")):
         q = (q or "").strip()
         if not q:
@@ -196,9 +222,18 @@ def lookup_company(
                 if r.ogrn == q:
                     return r
             continue
-        # --- поиск по имени ---
+        # --- поиск по имени: только строки с похожим названием ---
+        similar = [
+            r
+            for r in rows
+            if _name_similar(q, r.name) or _name_similar(q, r.name_full)
+        ]
+        if not similar:
+            return EgrulRecord(error=f"name_no_similar:{len(rows)}", name=q)
+
+        pool = similar
         if reg_year:
-            by_year = [r for r in rows if _year_of(r.reg_date) == int(reg_year)]
+            by_year = [r for r in similar if _year_of(r.reg_date) == int(reg_year)]
             if len(by_year) == 1:
                 return by_year[0]
             if len(by_year) > 1:
@@ -206,17 +241,16 @@ def lookup_company(
                     error=f"ambiguous_name_year:{len(by_year)}",
                     name=q,
                 )
-            # год не совпал ни с кем — не берём «первый попавшийся»
-            if len(rows) == 1:
-                # один хит, год в посте мог быть кривой — всё же берём
-                return rows[0]
+            # год не совпал среди похожих
+            if len(similar) == 1:
+                return similar[0]
             return EgrulRecord(
-                error=f"name_year_mismatch:{len(rows)}",
+                error=f"name_year_mismatch:{len(similar)}",
                 name=q,
             )
-        if len(rows) == 1:
-            return rows[0]
-        return EgrulRecord(error=f"ambiguous_name:{len(rows)}", name=q)
+        if len(pool) == 1:
+            return pool[0]
+        return EgrulRecord(error=f"ambiguous_name:{len(pool)}", name=q)
     return EgrulRecord(error="empty_query")
 
 

@@ -170,14 +170,14 @@ def _merge_enrich(p: dict[str, Any], **parts: Any) -> dict[str, Any]:
 
 
 def apply_egrul(payload: dict[str, Any], pause: float = 1.8) -> dict[str, Any]:
-    from parser.extract import is_plausible_firm_name
+    from parser.extract import can_search_egrul_by_name
 
     p = dict(payload)
     inn = (p.get("inn") or "").strip()
     ogrn = (p.get("ogrn") or "").strip()
     name_raw = (p.get("name") or "").strip()
-    # «ООО с историей» в поиск не отдаём — это не юр.имя
-    name = name_raw if is_plausible_firm_name(name_raw) else ""
+    # только ООО «БРЕНД»; не «Для связи @…», не «ООО с историей», не «ООО АФ»
+    name = name_raw if can_search_egrul_by_name(name_raw) else ""
     reg_year = p.get("reg_year")
     try:
         reg_year_i = int(reg_year) if reg_year else None
@@ -190,7 +190,7 @@ def apply_egrul(payload: dict[str, Any], pause: float = 1.8) -> dict[str, Any]:
             egrul={
                 "error": "no_key"
                 if not name_raw
-                else "bad_name_for_search"  # кривое имя из поста
+                else "bad_name_for_search"
             },
         )
 
@@ -571,22 +571,26 @@ def enrich_db(
         if "egrul" in sources:
 
             def _pick_egrul(p: dict[str, Any]) -> bool:
-                from parser.extract import is_plausible_firm_name
+                from parser.extract import can_search_egrul_by_name
 
                 eg = (p.get("enrich") or {}).get("egrul") or {}
                 if eg.get("inn") and not eg.get("error"):
                     return False
+                # битый хит по мусорному имени — перепробить только с ИНН/ОГРН
+                if eg.get("error") in {
+                    "bad_name_for_search",
+                    "name_no_similar",
+                    "empty_query",
+                }:
+                    pass
                 inn = (p.get("inn") or "").strip()
                 ogrn = (p.get("ogrn") or "").strip()
                 name = (p.get("name") or "").strip()
                 if inn or ogrn:
                     return True
-                # без ИНН — пробуем реальное имя (+ год регистрации сузит выдачу)
-                if is_plausible_firm_name(name):
+                if can_search_egrul_by_name(name):
                     return True
-                if only_with_key:
-                    return False
-                return bool(name)
+                return False
 
             _run_source(
                 name="ЕГРЮЛ",

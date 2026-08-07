@@ -21,12 +21,12 @@ RE_OOO_BARE = re.compile(
 RE_OOO = re.compile(r"\b(?:ООО|OОО)\b", re.I)
 # рекламный хвост вместо названия
 RE_FAKE_FIRM_NAME = re.compile(
-    r"(?i)(?:"
-    r"с\s+историей|без\s+истори|историей\s+\d{4}|нулевк|нулёвк|готов\w*|под\s+смен|"
+    r"(?i)^(?:"
+    r"с\s+историей|без\s+истори|нулевк|нулёвк|готов\w*|под\s+смен|"
     r"инн\s+по\s+запросу|по\s+запросу|без\s+сч[её]т|с\s+сч[её]т|"
-    r"с\s+оборот|без\s+оборот|больш\w*\s+оборот|под\s+ключ|в\s+любой\s+регион|"
+    r"с\s+оборот|без\s+оборот|под\s+ключ|в\s+любой\s+регион|"
     r"профи\b|экспресс|срочно|недорого|дешев|"
-    r"^\d{4}\s*г|история\s+\d{4}"
+    r"\d{4}\s*г|история\s+\d{4}"
     r")"
 )
 RE_INN_LABELED = re.compile(r"ИНН\s*[:\-]?\s*(\d{10})\b", re.I)
@@ -95,7 +95,12 @@ RE_SALE = re.compile(
 )
 RE_BAD_NAME_LINE = re.compile(
     r"(?i)^(добрый|здравствуйте|всем|подскажите|нужна|нужен|нужно|ищу|куплю|"
-    r"требуется|помогите|дата\s+\d|усн|осно)\b"
+    r"требуется|помогите|дата\s+\d|усн|осно|для\s+связи|пишите|стоимость|цена|"
+    r"контакт|телеграм|whats?app)\b"
+)
+RE_NOT_A_FIRM = re.compile(
+    r"(?i)@|для\s+связи|t\.me/|http|whats?app|телеграм|пишите\s+в|"
+    r"стоимость|цена\s*:|инн\s+по\s+запросу"
 )
 
 FOOTER_CUT = re.compile(
@@ -272,6 +277,8 @@ def is_plausible_firm_name(name: str) -> bool:
     """Отсекает рекламу вида «ООО с историей 2017» / «ООО Профи ИНН по запросу»."""
     if not name or len(name) < 2:
         return False
+    if RE_NOT_A_FIRM.search(name):
+        return False
     core = name
     core = re.sub(r"(?i)^ООО\s*", "", core).strip(" «»\"'“”")
     if len(core) < 2 or len(core) > 60:
@@ -279,6 +286,8 @@ def is_plausible_firm_name(name: str) -> bool:
     if RE_FAKE_FIRM_NAME.search(core):
         return False
     if RE_BAD_NAME_LINE.search(core):
+        return False
+    if RE_BAD_NAME_LINE.search(name.strip()):
         return False
     # сплошь цифры / год
     if re.fullmatch(r"[\d\s./гГ]+", core):
@@ -289,6 +298,23 @@ def is_plausible_firm_name(name: str) -> bool:
         return False
     # «с историей…» часто без кавычек уже отфильтровано; ловим mid-string
     if re.search(r"(?i)историей|по\s+запросу|нулевк|нулёвк", core):
+        return False
+    return True
+
+
+def can_search_egrul_by_name(name: str) -> bool:
+    """В поиск ЕГРЮЛ по имени — только явные ООО «БРЕНД», не «ОЛИМП»/контакты."""
+    if not is_plausible_firm_name(name):
+        return False
+    s = (name or "").strip()
+    if not re.match(r"(?i)^ООО\b", s):
+        return False
+    core = re.sub(r"(?i)^ООО\s*", "", s).strip(" «»\"'“”")
+    # слишком короткое / общее имя → тысячи хитов
+    if len(core) < 4:
+        return False
+    # одно короткое слово из 2–3 букв без цифр — мусор для поиска
+    if re.fullmatch(r"[А-ЯЁA-Zа-яёa-z]{1,3}", core):
         return False
     return True
 
