@@ -1,6 +1,6 @@
-# Автопрогон: TG → enrich всех уникальных дыр (limit=0) → Excel/Sheets.
-# Второй экземпляр SKIP (mutex + lock).
-# Живой статус: data\STATUS.txt  |  смотреть: deploy\show_status.ps1
+# Auto job: TG -> enrich unique holes (limit=0) -> Excel/Sheets.
+# Second instance SKIP (mutex + lock).
+# Live status: data\STATUS.txt  |  view: deploy\show_status.ps1
 #
 #   powershell -ExecutionPolicy Bypass -File deploy\run_job.ps1
 
@@ -26,25 +26,24 @@ function Write-Log([string]$msg) {
 }
 
 function Set-JobStatus([string]$stage, [string]$detail = "") {
+    $safeDetail = $detail.Replace("'", " ")
     $pyCode = @"
 from parser.job_status import write_status
-write_status(stage=$([char]39)$stage$([char]39), detail=$([char]39)$($detail.Replace("'"," "))$([char]39), extra={'log': r'$log'})
+write_status(stage='$stage', detail='$safeDetail', extra={'log': r'$log'})
 "@
     try {
         & $py -c $pyCode 2>$null
     } catch {
-        # fallback без python
         $text = @"
-Обновлено: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
-Этап:      $stage
-Детали:    $detail
-Лог:       $log
+Updated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+Stage:   $stage
+Detail:  $detail
+Log:     $log
 "@
         Set-Content -Path $statusTxt -Value $text -Encoding UTF8
     }
 }
 
-# --- блокировка ---
 $mutex = New-Object System.Threading.Mutex($false, "Global\FirmParserRunJob")
 $hasMutex = $false
 $lockStream = $null
@@ -54,7 +53,7 @@ try {
     $hasMutex = $false
 }
 if (-not $hasMutex) {
-    Write-Host "SKIP: другой прогон уже работает (mutex)."
+    Write-Host "SKIP: another run is already active (mutex)."
     try {
         & $py -c "from parser.job_status import mark_skip; mark_skip('mutex: already running')" 2>$null
     } catch {}
@@ -73,7 +72,7 @@ try {
         $lockStream.Write($bytes, 0, $bytes.Length)
         $lockStream.Flush()
     } catch {
-        Write-Host "SKIP: другой прогон держит lock-файл."
+        Write-Host "SKIP: another run holds the lock file."
         try {
             & $py -c "from parser.job_status import mark_skip; mark_skip('lock file held')" 2>$null
         } catch {}
@@ -93,40 +92,38 @@ try {
     Set-JobStatus "START" "pid=$PID log=$stamp"
     $code = 0
 
-    # 1) TG — новые за 2 дня
     Set-JobStatus "scrape" "Telegram last 2 days"
     Write-Log "==> scrape Telegram (2d)"
     & $py run_parser.py --since-days 2 --limit 5000 *>&1 | Tee-Object -FilePath $log -Append
     if ($LASTEXITCODE -ne 0) { $code = $LASTEXITCODE }
 
-    # 2) enrich всех уникальных дыр (без лимита), кругами
     $maxRounds = 20
     for ($i = 1; $i -le $maxRounds; $i++) {
         Set-JobStatus "enrich" ("round $i/$maxRounds unique INNs, limit=0")
-        Write-Log ("==> enrich-core round {0}/{1} (уникальные, без лимита)" -f $i, $maxRounds)
+        Write-Log ("==> enrich-core round {0}/{1} (unique, no limit)" -f $i, $maxRounds)
         $enrichLog = Join-Path $logDir ("enrich_{0}_r{1}.log" -f $stamp, $i)
         & $py run_parser.py --enrich-only --enrich-core --enrich-limit 0 *>&1 |
             Tee-Object -FilePath $log -Append |
             Tee-Object -FilePath $enrichLog
         if ($LASTEXITCODE -ne 0) {
             $code = $LASTEXITCODE
-            Write-Log "enrich exit=$LASTEXITCODE — продолжаем к экспорту"
+            Write-Log "enrich exit=$LASTEXITCODE - continue to export"
             break
         }
         $tail = Get-Content $enrichLog -Raw -ErrorAction SilentlyContinue
         if ($tail -match "attempted.: 0") {
-            Write-Log "enrich: attempted=0 — дыр не осталось"
+            Write-Log "enrich: attempted=0 - no holes left"
             break
         }
-        $zeroLines = ([regex]::Matches($tail, ":\s*0 шт")).Count
-        $srcLines = ([regex]::Matches($tail, ":\s*\d+ шт")).Count
+        # Match "NAME: N шт" from pipeline prints (ASCII-safe: number before non-digit)
+        $zeroLines = ([regex]::Matches($tail, ":\s*0\s")).Count
+        $srcLines = ([regex]::Matches($tail, ":\s*\d+\s")).Count
         if ($srcLines -gt 0 -and $zeroLines -ge $srcLines) {
-            Write-Log "enrich: все источники 0 шт — готово"
+            Write-Log "enrich: all sources 0 - done"
             break
         }
     }
 
-    # 3) export
     Set-JobStatus "export" "rescore + excel + sheets"
     Write-Log "==> rescore + export"
     $cmd = @("run_parser.py", "--rescore", "--export-only")

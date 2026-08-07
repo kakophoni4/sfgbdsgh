@@ -71,13 +71,23 @@ foreach ($rel in $files) {
         Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing -TimeoutSec 60 -Headers @{
             "User-Agent" = "firmy-updater"
         }
+        # PowerShell 5.1 needs UTF-8 BOM for .ps1 with non-ASCII, else parser breaks
+        if ($rel -like "*.ps1") {
+            $txt = [System.IO.File]::ReadAllText($out)
+            $utf8Bom = New-Object System.Text.UTF8Encoding $true
+            [System.IO.File]::WriteAllText($out, $txt, $utf8Bom)
+        }
         $n++
         Write-Host ("OK " + $rel)
     } catch {
-        # запасной CDN
         try {
             $alt = "https://cdn.jsdelivr.net/gh/$Repo@$sha/$rel"
             Invoke-WebRequest -Uri $alt -OutFile $out -UseBasicParsing -TimeoutSec 60
+            if ($rel -like "*.ps1") {
+                $txt = [System.IO.File]::ReadAllText($out)
+                $utf8Bom = New-Object System.Text.UTF8Encoding $true
+                [System.IO.File]::WriteAllText($out, $txt, $utf8Bom)
+            }
             $n++
             Write-Host ("OK(jsdelivr) " + $rel)
         } catch {

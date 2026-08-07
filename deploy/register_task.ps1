@@ -1,5 +1,5 @@
-# Регистрация автозапуска (от Администратора).
-# Пока идёт старый прогон — новый SKIP (IgnoreNew + mutex в run_job.ps1).
+# Register FirmParser scheduled task (run as Admin if possible).
+# While a run is active, new starts are skipped (IgnoreNew + mutex in run_job.ps1).
 #
 #   powershell -ExecutionPolicy Bypass -File deploy\register_task.ps1
 #   powershell -ExecutionPolicy Bypass -File deploy\register_task.ps1 -EveryMinutes 5
@@ -19,10 +19,9 @@ $script = Join-Path $Root "deploy\run_job.ps1"
 $taskName = "FirmParser"
 
 if (-not (Test-Path $script)) {
-    throw "Не найден $script — сначала update_raw_files.ps1"
+    throw "Missing $script - run update_raw_files.ps1 first"
 }
 
-# снять старую задачу если была
 Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 
 $action = New-ScheduledTaskAction `
@@ -30,7 +29,6 @@ $action = New-ScheduledTaskAction `
     -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$script`"" `
     -WorkingDirectory $Root
 
-# первый старт через 1 мин, дальше каждые N минут
 $triggerRepeat = New-ScheduledTaskTrigger `
     -Once `
     -At (Get-Date).AddMinutes(1) `
@@ -39,8 +37,6 @@ $triggerRepeat = New-ScheduledTaskTrigger `
 $triggerBoot = New-ScheduledTaskTrigger -AtStartup
 $triggers = @($triggerRepeat, $triggerBoot)
 
-# IgnoreNew: пока крутится задача — новый экземпляр планировщик НЕ запускает
-# + в run_job.ps1 свой mutex/lock на случай гонки
 $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
@@ -54,6 +50,8 @@ $principal = New-ScheduledTaskPrincipal `
     -LogonType Interactive `
     -RunLevel Highest
 
+$desc = "Firm parser: TG -> enrich(no limit) -> Excel/Sheets. Skip if running."
+
 try {
     Register-ScheduledTask `
         -TaskName $taskName `
@@ -61,24 +59,24 @@ try {
         -Trigger $triggers `
         -Settings $settings `
         -Principal $principal `
-        -Description "Firm parser: TG → enrich(без лимита) → Excel/Sheets. Skip if running." `
+        -Description $desc `
         -Force | Out-Null
 } catch {
-    # fallback без Highest (если не админ)
     Register-ScheduledTask `
         -TaskName $taskName `
         -Action $action `
         -Trigger $triggers `
         -Settings $settings `
-        -Description "Firm parser: TG → enrich(без лимита) → Excel/Sheets. Skip if running." `
+        -Description $desc `
         -Force | Out-Null
 }
 
-Write-Host "OK: задача '$taskName' каждые $EveryMinutes мин + при старте Windows."
-Write-Host "  MultipleInstances=IgnoreNew (второй не стартует)."
-Write-Host "  Лимит выполнения: 8 часов."
-Write-Host "Проверка:  Get-ScheduledTask -TaskName $taskName | Format-List *"
-Write-Host "Сейчас:     Start-ScheduledTask -TaskName $taskName"
-Write-Host "Стоп:       Stop-ScheduledTask -TaskName $taskName"
-Write-Host "Удалить:    Unregister-ScheduledTask -TaskName $taskName -Confirm:`$false"
-Write-Host "Логи:       $Root\data\logs\"
+Write-Host "OK: task '$taskName' every $EveryMinutes min + at Windows startup."
+Write-Host "  MultipleInstances=IgnoreNew (second instance will not start)."
+Write-Host "  Execution time limit: 8 hours."
+Write-Host "Check:  Get-ScheduledTask -TaskName $taskName | Format-List *"
+Write-Host "Start:  Start-ScheduledTask -TaskName $taskName"
+Write-Host "Stop:   Stop-ScheduledTask -TaskName $taskName"
+Write-Host "Remove: Unregister-ScheduledTask -TaskName $taskName -Confirm:`$false"
+Write-Host "Logs:   $Root\data\logs\"
+Write-Host "Status: powershell -ExecutionPolicy Bypass -File $Root\deploy\show_status.ps1"
