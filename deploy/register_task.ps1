@@ -22,7 +22,8 @@ if (-not (Test-Path $script)) {
     throw "Missing $script - run update_raw_files.ps1 first"
 }
 
-Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+$existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+$wasRunning = $existing -and ($existing.State -eq "Running")
 
 # -WindowStyle Hidden: без синего окна каждые 5 мин (лог всё равно в data\logs)
 $action = New-ScheduledTaskAction `
@@ -31,7 +32,6 @@ $action = New-ScheduledTaskAction `
     -WorkingDirectory $Root
 
 # TimeSpan.MaxValue is rejected by Task Scheduler (HRESULT 0x80041318).
-# ~27 years is enough and stays in valid range.
 $triggerRepeat = New-ScheduledTaskTrigger `
     -Once `
     -At (Get-Date).AddMinutes(1) `
@@ -56,28 +56,52 @@ $principal = New-ScheduledTaskPrincipal `
 $desc = "Firm parser: TG -> enrich(no limit) -> Excel/Sheets. Skip if running."
 
 $registered = $false
-try {
-    Register-ScheduledTask `
-        -TaskName $taskName `
-        -Action $action `
-        -Trigger $triggers `
-        -Settings $settings `
-        -Principal $principal `
-        -Description $desc `
-        -Force | Out-Null
-    $registered = $true
-    Write-Host "Registered with Highest privileges."
-} catch {
-    Write-Host ("Highest failed: " + $_.Exception.Message)
-    Write-Host "Retry without Highest..."
-    Register-ScheduledTask `
-        -TaskName $taskName `
-        -Action $action `
-        -Trigger $triggers `
-        -Settings $settings `
-        -Description $desc `
-        -Force | Out-Null
-    $registered = $true
+if ($wasRunning) {
+    # Unregister/Register -Force убивает текущий прогон — обновляем на месте
+    Write-Host "WARN: FirmParser is Running - updating definition WITHOUT kill."
+    try {
+        Set-ScheduledTask `
+            -TaskName $taskName `
+            -Action $action `
+            -Trigger $triggers `
+            -Settings $settings `
+            -Principal $principal `
+            -Description $desc | Out-Null
+        $registered = $true
+    } catch {
+        Set-ScheduledTask `
+            -TaskName $taskName `
+            -Action $action `
+            -Trigger $triggers `
+            -Settings $settings `
+            -Description $desc | Out-Null
+        $registered = $true
+    }
+} else {
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+    try {
+        Register-ScheduledTask `
+            -TaskName $taskName `
+            -Action $action `
+            -Trigger $triggers `
+            -Settings $settings `
+            -Principal $principal `
+            -Description $desc `
+            -Force | Out-Null
+        $registered = $true
+        Write-Host "Registered with Highest privileges."
+    } catch {
+        Write-Host ("Highest failed: " + $_.Exception.Message)
+        Write-Host "Retry without Highest..."
+        Register-ScheduledTask `
+            -TaskName $taskName `
+            -Action $action `
+            -Trigger $triggers `
+            -Settings $settings `
+            -Description $desc `
+            -Force | Out-Null
+        $registered = $true
+    }
 }
 
 if (-not $registered) { throw "Failed to register task $taskName" }

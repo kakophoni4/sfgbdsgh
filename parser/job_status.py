@@ -77,3 +77,7 @@ def mark_skip(reason: str = "already running") -> None:
 
 def mark_done(detail: str = "ok") -> None:
     write_status(stage="DONE", detail=detail)
+
+
+def mark_fail(detail: str = "failed") -> None:
+    write_status(stage="FAIL", detail=detail)

@@ -13,10 +13,23 @@ $logDir = Join-Path $Root "data\logs"
 
 Write-Host "=== FirmParser status ==="
 Write-Host ("Root: " + $Root)
+$task = Get-ScheduledTask -TaskName "FirmParser" -ErrorAction SilentlyContinue
+if ($task) {
+    Write-Host ("Task: " + $task.State)
+} else {
+    Write-Host "Task: NOT REGISTERED"
+}
 if (Test-Path $lock) {
     Write-Host "Lock: RUNNING (data\run_job.lock exists)"
 } else {
-    Write-Host "Lock: idle"
+    Write-Host "Lock: idle (process not holding lock - if Stage=enrich and time old, it DIED)"
+}
+$venvPy = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -like "*firmy*" -or $_.CommandLine -like "*run_parser*" }
+if ($venvPy) {
+    Write-Host ("Python: RUNNING pid=" + (($venvPy | ForEach-Object { $_.ProcessId }) -join ","))
+} else {
+    Write-Host "Python: not running"
 }
 
 Write-Host ""
