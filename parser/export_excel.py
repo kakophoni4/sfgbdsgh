@@ -331,12 +331,15 @@ def _write_sheet(ws: Worksheet, payloads: list[dict[str, Any]]) -> None:
             cell.alignment = Alignment(wrap_text=True, vertical="top")
 
         zsk = p.get("zsk_claim") or ""
-        # ЗСК / Итог: индексы сдвинулись (+1 колонка «Первое появление»)
-        if zsk in ZSK_FILL:
-            ws.cell(r, 19).fill = ZSK_FILL[zsk]
+        # цвет всей строки по вердикту
         verdict = (p.get("scoring") or {}).get("verdict")
         if verdict in VERDICT_FILL:
-            ws.cell(r, 25).fill = VERDICT_FILL[verdict]
+            fill = VERDICT_FILL[verdict]
+            for c in range(1, len(HEADERS) + 1):
+                ws.cell(r, c).fill = fill
+        # ЗСК поверх — чуть заметнее в своей колонке
+        if zsk in ZSK_FILL:
+            ws.cell(r, 19).fill = ZSK_FILL[zsk]
 
     for i in range(1, len(HEADERS) + 1):
         ws.column_dimensions[get_column_letter(i)].width = _WIDTHS.get(i, 14)
