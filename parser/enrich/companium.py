@@ -153,10 +153,10 @@ def _fetch_http(ogrn: str) -> tuple[dict[str, str], str]:
     html = r.text if hasattr(r, "text") else ""
     if code == 404:
         return {}, "not_found"
+    if code == 429 or _has_captcha(html):
+        return {"main": html or ""}, "recaptcha_v2"
     if code >= 400:
         return {}, f"http_{code}"
-    if _has_captcha(html) and len(html) < 8000:
-        return {"main": html}, "captcha"
     pages["main"] = html or ""
     for tab in ("legal-cases", "enforcements", "fedresurs"):
         try:
@@ -188,51 +188,51 @@ def _fetch_playwright(ogrn: str) -> tuple[dict[str, str], str]:
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
             page.wait_for_timeout(1500)
 
-            # Яндекс SmartCaptcha / checkbox
-            for _ in range(3):
-                html = page.content()
-                if not _has_captcha(html):
-                    break
-                clicked = False
-                for frame in page.frames:
-                    try:
-                        for sel in (
-                            ".CheckboxCaptcha-Button",
-                            "#js-button",
-                            "input[type=checkbox]",
-                            "[role=checkbox]",
-                        ):
-                            loc = frame.locator(sel)
-                            if loc.count():
-                                loc.first.click(timeout=2500)
-                                clicked = True
-                                page.wait_for_timeout(2500)
-                                break
-                    except Exception:
-                        continue
-                    if clicked:
-                        break
-                if not clicked:
-                    for sel in (
-                        ".CheckboxCaptcha-Button",
-                        "#js-button",
-                        "text=Я не робот",
-                    ):
+            # Google reCAPTCHA v2: клик по checkbox; если bframe — картинки, не решаем
+            html = page.content()
+            if _has_captcha(html) or "человек" in page.title().lower():
+                try:
+                    page.wait_for_selector(
+                        "iframe[src*='recaptcha'][src*='anchor']", timeout=12000
+                    )
+                    page.frame_locator(
+                        "iframe[src*='recaptcha'][src*='anchor']"
+                    ).locator("#recaptcha-anchor").click(timeout=8000)
+                    page.wait_for_timeout(4000)
+                except Exception:
+                    pass
+
+                # image challenge?
+                if any("bframe" in (f.url or "") for f in page.frames):
+                    browser.close()
+                    return {"main": page.content()}, "recaptcha_image_challenge"
+
+                checked = False
+                for fr in page.frames:
+                    if "anchor" in (fr.url or ""):
                         try:
-                            if page.locator(sel).count():
-                                page.locator(sel).first.click(timeout=2500)
-                                clicked = True
-                                page.wait_for_timeout(2500)
-                                break
+                            checked = (
+                                fr.get_attribute("#recaptcha-anchor", "aria-checked")
+                                == "true"
+                            )
                         except Exception:
-                            continue
-                if not clicked:
-                    break
+                            pass
+                if checked:
+                    try:
+                        page.locator("button[type=submit]").click(
+                            timeout=5000, force=True
+                        )
+                        page.wait_for_timeout(3000)
+                    except Exception:
+                        pass
+                else:
+                    browser.close()
+                    return {"main": page.content()}, "recaptcha_v2_unsolved"
 
             pages["main"] = page.content()
             if _has_captcha(pages["main"]) and "недостоверн" not in pages["main"].lower():
                 browser.close()
-                return pages, "captcha"
+                return pages, "recaptcha_v2"
 
             for tab in ("legal-cases", "enforcements", "fedresurs"):
                 page.goto(
