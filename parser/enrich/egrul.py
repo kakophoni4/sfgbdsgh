@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -144,16 +145,42 @@ def search_egrul(query: str, *, retries: int = 2) -> list[EgrulRecord]:
     return [EgrulRecord(error=last_err or "unknown")]
 
 
+def _year_of(reg_date: str) -> int | None:
+    s = (reg_date or "").strip()
+    if not s:
+        return None
+    # 13.12.2024 / 2024-12-13 / 2024
+    for part in (s[-4:], s[:4]):
+        if part.isdigit() and 1990 <= int(part) <= 2100:
+            return int(part)
+    m = re.search(r"(20\d{2}|19\d{2})", s)
+    return int(m.group(1)) if m else None
+
+
+def _name_query(name: str) -> str:
+    """Нормализация для поиска: ООО «Векта+» → ООО Векта+."""
+    s = (name or "").strip()
+    s = re.sub(r"[«»\"“”']", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
 def lookup_company(
     *,
     inn: str = "",
     ogrn: str = "",
     name: str = "",
+    reg_year: int | None = None,
 ) -> EgrulRecord:
+    """ИНН/ОГРН — точно. Имя — только если однозначный хит (или год регистрации сужает)."""
     for q, kind in ((inn, "inn"), (ogrn, "ogrn"), (name, "name")):
         q = (q or "").strip()
         if not q:
             continue
+        if kind == "name":
+            q = _name_query(q)
+            if len(q) < 5:
+                continue
         rows = search_egrul(q)
         if not rows:
             continue
@@ -163,11 +190,33 @@ def lookup_company(
             for r in rows:
                 if r.inn == q:
                     return r
+            continue
         if kind == "ogrn":
             for r in rows:
                 if r.ogrn == q:
                     return r
-        return rows[0]
+            continue
+        # --- поиск по имени ---
+        if reg_year:
+            by_year = [r for r in rows if _year_of(r.reg_date) == int(reg_year)]
+            if len(by_year) == 1:
+                return by_year[0]
+            if len(by_year) > 1:
+                return EgrulRecord(
+                    error=f"ambiguous_name_year:{len(by_year)}",
+                    name=q,
+                )
+            # год не совпал ни с кем — не берём «первый попавшийся»
+            if len(rows) == 1:
+                # один хит, год в посте мог быть кривой — всё же берём
+                return rows[0]
+            return EgrulRecord(
+                error=f"name_year_mismatch:{len(rows)}",
+                name=q,
+            )
+        if len(rows) == 1:
+            return rows[0]
+        return EgrulRecord(error=f"ambiguous_name:{len(rows)}", name=q)
     return EgrulRecord(error="empty_query")
 
 

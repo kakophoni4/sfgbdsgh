@@ -170,15 +170,33 @@ def _merge_enrich(p: dict[str, Any], **parts: Any) -> dict[str, Any]:
 
 
 def apply_egrul(payload: dict[str, Any], pause: float = 1.8) -> dict[str, Any]:
+    from parser.extract import is_plausible_firm_name
+
     p = dict(payload)
     inn = (p.get("inn") or "").strip()
     ogrn = (p.get("ogrn") or "").strip()
-    name = (p.get("name") or "").strip()
+    name_raw = (p.get("name") or "").strip()
+    # «ООО с историей» в поиск не отдаём — это не юр.имя
+    name = name_raw if is_plausible_firm_name(name_raw) else ""
+    reg_year = p.get("reg_year")
+    try:
+        reg_year_i = int(reg_year) if reg_year else None
+    except (TypeError, ValueError):
+        reg_year_i = None
 
     if not inn and not ogrn and not name:
-        return _merge_enrich(p, egrul={"error": "no_key"})
+        return _merge_enrich(
+            p,
+            egrul={
+                "error": "no_key"
+                if not name_raw
+                else "bad_name_for_search"  # кривое имя из поста
+            },
+        )
 
-    rec = lookup_company(inn=inn, ogrn=ogrn, name=name)
+    rec = lookup_company(
+        inn=inn, ogrn=ogrn, name=name, reg_year=reg_year_i
+    )
     _sleep(pause)
 
     if rec.error:
@@ -553,10 +571,22 @@ def enrich_db(
         if "egrul" in sources:
 
             def _pick_egrul(p: dict[str, Any]) -> bool:
-                if only_with_key and not (p.get("inn") or p.get("ogrn")):
-                    return False
+                from parser.extract import is_plausible_firm_name
+
                 eg = (p.get("enrich") or {}).get("egrul") or {}
-                return not (eg.get("inn") and not eg.get("error"))
+                if eg.get("inn") and not eg.get("error"):
+                    return False
+                inn = (p.get("inn") or "").strip()
+                ogrn = (p.get("ogrn") or "").strip()
+                name = (p.get("name") or "").strip()
+                if inn or ogrn:
+                    return True
+                # без ИНН — пробуем реальное имя (+ год регистрации сузит выдачу)
+                if is_plausible_firm_name(name):
+                    return True
+                if only_with_key:
+                    return False
+                return bool(name)
 
             _run_source(
                 name="ЕГРЮЛ",
