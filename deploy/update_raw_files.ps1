@@ -50,17 +50,21 @@ $files = @(
 if (-not (Test-Path $Root)) { throw "Missing $Root" }
 Set-Location $Root
 $n = 0
+$bust = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 foreach ($rel in $files) {
-    $url = "$Base/$rel"
+    # ?t=... — иначе raw.githubusercontent.com отдаёт закэшированный старый файл
+    $url = "$Base/$rel" + "?t=$bust"
     $out = Join-Path $Root ($rel -replace "/", "\")
     $dir = Split-Path $out -Parent
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     try {
-        Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing -TimeoutSec 60
+        Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing -TimeoutSec 60 -Headers @{
+            "Cache-Control" = "no-cache"
+        }
         $n++
         Write-Host ("OK " + $rel)
     } catch {
         Write-Host ("SKIP " + $rel + " :: " + $_.Exception.Message)
     }
 }
-Write-Host ("Done: $n files. No data/venv touched.")
+Write-Host ("Done: $n files. No data/venv touched. cacheBust=$bust")
