@@ -82,12 +82,12 @@ Excel: `C:\firmy\data\checklist_export.xlsx`
 В `.env`:
 
 ```env
-ENRICH_PAUSE=10
-ENRICH_JITTER=8
+ENRICH_PAUSE=2.5
+ENRICH_JITTER=1
 ENRICH_LIMIT=40
 ```
 
-Между запросами **~10–18 сек**. При капче → `ENRICH_PAUSE=20` и пауза на час.
+Между запросами **~2.5–3.5 сек**. При капче → `ENRICH_PAUSE=10` / `20` и пауза на час.
 
 ## 5. По расписанию (Планировщик заданий)
 

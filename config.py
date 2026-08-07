@@ -24,11 +24,10 @@ CHAT_IDS = [
 # Сколько сообщений тянуть при backfill
 HISTORY_LIMIT = int(os.getenv("HISTORY_LIMIT", "400"))
 
-# Паузы обогащения — не торопимся, чтобы не словить капчу ЕГРЮЛ/БФО
-# базовый интервал между запросами (сек)
-ENRICH_PAUSE = float(os.getenv("ENRICH_PAUSE", "8"))
-# случайный разброс сверху (сек): итого pause + random(0..jitter)
-ENRICH_JITTER = float(os.getenv("ENRICH_JITTER", "7"))
+# Паузы обогащения: итого ~ ENRICH_PAUSE .. ENRICH_PAUSE+ENRICH_JITTER сек
+# При капче ЕГРЮЛ/БФО подними, например ENRICH_PAUSE=10 ENRICH_JITTER=5
+ENRICH_PAUSE = float(os.getenv("ENRICH_PAUSE", "2.5"))
+ENRICH_JITTER = float(os.getenv("ENRICH_JITTER", "1.0"))
 # лимит лотов за один прогон enrich
 ENRICH_LIMIT = int(os.getenv("ENRICH_LIMIT", "40"))
 

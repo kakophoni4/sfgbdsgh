@@ -8,8 +8,8 @@ Type=oneshot
 WorkingDirectory=/opt/firmy
 Environment=PYTHONUNBUFFERED=1
 # Паузы можно переопределить здесь
-Environment=ENRICH_PAUSE=10
-Environment=ENRICH_JITTER=8
+Environment=ENRICH_PAUSE=2.5
+Environment=ENRICH_JITTER=1
 ExecStart=/opt/firmy/.venv/bin/python /opt/firmy/run_parser.py --enrich --limit 300 --enrich-limit 40
 User=www-data
 Group=www-data
