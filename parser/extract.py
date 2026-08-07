@@ -309,24 +309,47 @@ def is_plausible_firm_name(name: str) -> bool:
     return True
 
 
+def _brand_for_search(name: str) -> str:
+    """Обрезать рекламные хвосты: «ДОМ-РАНТЬЕ от 17.10.2024г» → ДОМ-РАНТЬЕ."""
+    core = re.sub(r"(?i)^ООО\s*", "", (name or "").strip())
+    core = core.strip(" «»\"'“”,.")
+    core = re.split(
+        r"(?i)\s+от\s+\d|\s+с\s+\d{1,2}[./]|\s*[-–—]\s*нов(ая|ый)|"
+        r"\s*\(\s*открыт|\s*,\s*ИНН|\s+ИНН\b|\s+переведен",
+        core,
+        maxsplit=1,
+    )[0].strip(" «»\"'“”,.-")
+    return core
+
+
 def can_search_egrul_by_name(name: str) -> bool:
-    """В поиск ЕГРЮЛ по имени — только явные ООО «БРЕНД», не «ОЛИМП»/контакты."""
-    if not is_plausible_firm_name(name):
-        return False
+    """В поиск ЕГРЮЛ по имени — только явные ООО «БРЕНД», не объявленческий мусор."""
     s = (name or "").strip()
     if not re.match(r"(?i)^ООО\b", s):
         return False
-    core = re.sub(r"(?i)^ООО\s*", "", s).strip(" «»\"'“”")
-    # слишком короткое / общее имя → тысячи хитов
+    # явный мусор целиком
+    if re.search(
+        r"(?i)в\s+москв|адрес\s*:|налог|открыта\s+в|новая\s+компани|"
+        r"инн\s*\d|^\s*ООО\s*«?\s*ИНН|^\s*ООО\s*,|"
+        r"^\s*ООО\s*«?\s*\d+\.|регистрация\s+\d",
+        s,
+    ):
+        return False
+    core = _brand_for_search(s)
+    if not is_plausible_firm_name(f"ООО «{core}»"):
+        return False
     if len(core) < 5:
         return False
-    # одно короткое слово из 2–4 букв — слишком общее (СТРОЙ/ВЕГА/РЕАЛ)
+    # одно короткое слово 1–4 буквы
     if re.fullmatch(r"[А-ЯЁA-Zа-яёa-z]{1,4}", core):
         return False
-    # «в Москве», предлог в начале бренда
+    # «1 Ви», начинается с цифры/номера пункта
+    if re.match(r"^\d", core):
+        return False
     if re.match(r"(?i)^(в|на|под|без|с|для|по)\s+", core):
         return False
-    # слишком общие слова-бренды
+    if " " in core and len(core) > 80:
+        return False  # целое предложение
     if core.upper() in {
         "СТРОЙ",
         "СТРОЙКА",
@@ -345,6 +368,9 @@ def can_search_egrul_by_name(name: str) -> bool:
         "СФЕРА",
         "ОЛИМП",
         "РАССВЕТ",
+        "ПРОЕКТ",
+        "ИНЖИНИРИНГ",
+        "ГРАНТ",
     }:
         return False
     return True

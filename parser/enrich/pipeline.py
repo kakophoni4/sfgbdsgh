@@ -176,8 +176,13 @@ def apply_egrul(payload: dict[str, Any], pause: float = 1.8) -> dict[str, Any]:
     inn = (p.get("inn") or "").strip()
     ogrn = (p.get("ogrn") or "").strip()
     name_raw = (p.get("name") or "").strip()
-    # только ООО «БРЕНД»; не «Для связи @…», не «ООО с историей», не «ООО АФ»
-    name = name_raw if can_search_egrul_by_name(name_raw) else ""
+    # только ООО «БРЕНД»; не «Для связи @…», не «ООО с историей», не «в Москве»
+    from parser.extract import _brand_for_search
+
+    name = ""
+    if can_search_egrul_by_name(name_raw):
+        brand = _brand_for_search(name_raw)
+        name = f"ООО {brand}" if brand else ""
     reg_year = p.get("reg_year")
     try:
         reg_year_i = int(reg_year) if reg_year else None
