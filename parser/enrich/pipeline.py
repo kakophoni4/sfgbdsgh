@@ -170,15 +170,19 @@ def _merge_enrich(p: dict[str, Any], **parts: Any) -> dict[str, Any]:
 
 
 def apply_egrul(payload: dict[str, Any], pause: float = 1.8) -> dict[str, Any]:
+    from parser.extract import is_plausible_firm_name
+
     p = dict(payload)
     inn = (p.get("inn") or "").strip()
     ogrn = (p.get("ogrn") or "").strip()
     name = (p.get("name") or "").strip()
+    # «ООО с историей» в поиск ЕГРЮЛ не отдаём — только ИНН/ОГРН или нормальный бренд
+    lookup_name = name if is_plausible_firm_name(name) else ""
 
-    if not inn and not ogrn and not name:
+    if not inn and not ogrn and not lookup_name:
         return _merge_enrich(p, egrul={"error": "no_key"})
 
-    rec = lookup_company(inn=inn, ogrn=ogrn, name=name)
+    rec = lookup_company(inn=inn, ogrn=ogrn, name=lookup_name)
     _sleep(pause)
 
     if rec.error:
@@ -188,8 +192,12 @@ def apply_egrul(payload: dict[str, Any], pause: float = 1.8) -> dict[str, Any]:
         p["inn"] = rec.inn
     if rec.ogrn and not ogrn:
         p["ogrn"] = rec.ogrn
-    if rec.name and (not p.get("name") or len(p.get("name") or "") < 5):
-        p["name"] = rec.name if rec.name.upper().startswith("ООО") else f"ООО «{rec.name}»"
+    # Всегда подменяем имя официальным из ЕГРЮЛ (не оставляем «с историей»)
+    if rec.name:
+        formal = rec.name.strip()
+        if not formal.upper().startswith("ООО"):
+            formal = f"ООО «{formal}»"
+        p["name"] = formal
     if rec.reg_date:
         p["reg_date_raw"] = rec.reg_date
         p["reg_year"] = _reg_year(rec.reg_date)

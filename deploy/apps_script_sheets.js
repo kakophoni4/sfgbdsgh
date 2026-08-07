@@ -7,7 +7,7 @@
  */
 
 var EXPECTED_TOKEN = "";
-var VERSION = "v3-pretty-days";
+var VERSION = "v4-egrul-names";
 
 function doPost(e) {
   try {

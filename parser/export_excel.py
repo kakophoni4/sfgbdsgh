@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -211,12 +212,18 @@ def row_from_payload(p: dict[str, Any]) -> list[Any]:
     from parser.extract import is_plausible_firm_name
 
     disp_name = ""
-    for cand in (egrul.get("name"), p.get("name")):
-        if cand and is_plausible_firm_name(str(cand)):
-            disp_name = str(cand)
-            break
+    for cand in (egrul.get("name_full"), egrul.get("name"), p.get("name")):
+        if not cand:
+            continue
+        s = str(cand)
+        if not is_plausible_firm_name(s):
+            continue
+        if re.search(r"(?i)историей|по\s+запросу|больш\w*\s+оборот", s):
+            continue
+        disp_name = s
+        break
     if not disp_name and inn and str(inn).isdigit():
-        disp_name = f"ООО (ИНН {inn})"
+        disp_name = f"(название из ЕГРЮЛ ещё нет, ИНН {inn})"
 
     return [
         disp_name,

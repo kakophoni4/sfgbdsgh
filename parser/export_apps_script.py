@@ -19,7 +19,7 @@ from parser.export_excel import (
     _zsk_cell,
 )
 
-EXPORT_VERSION = "v3-pretty-days"
+EXPORT_VERSION = "v4-egrul-names"
 
 # Компактная шапка для онлайн-таблицы (без сырого текста и ручных пустышек)
 SHEET_HEADERS = [
@@ -90,32 +90,44 @@ def _flat(s: Any, limit: int = 300) -> str:
     return t[:limit]
 
 
-def _display_name(p: dict[str, Any]) -> str:
+def _official_name(p: dict[str, Any]) -> str:
+    """Только имя из ЕГРЮЛ / уже переписанное после пробива. Рекламу игнорим."""
     from parser.extract import is_plausible_firm_name
 
-    egrul = (p.get("enrich") or {}).get("egrul") or {}
+    enrich = p.get("enrich") or {}
+    egrul = enrich.get("egrul") or {}
     inn = (p.get("inn") or "").strip()
-    # приоритет: официальное имя из ЕГРЮЛ
-    for cand in (egrul.get("name"), p.get("name")):
-        name = _flat(cand or "", 120)
-        if name and not _is_buyer_name(name) and is_plausible_firm_name(name):
-            return name
-    if inn.isdigit():
-        return f"ООО (ИНН {inn})"
-    return "без названия"
+
+    for cand in (egrul.get("name_full"), egrul.get("name"), p.get("name")):
+        name = _flat(cand or "", 160)
+        if not name or _is_buyer_name(name):
+            continue
+        if not is_plausible_firm_name(name):
+            continue
+        # отсечь «с историей» даже если валидатор пропустил
+        if re.search(r"(?i)историей|по\s+запросу|больш\w*\s+оборот", name):
+            continue
+        if not name.upper().startswith("ООО"):
+            name = f"ООО «{name}»"
+        return name
+    if inn.isdigit() and len(inn) == 10:
+        return f"(название из ЕГРЮЛ ещё нет, ИНН {inn})"
+    return ""
+
+
+def _display_name(p: dict[str, Any]) -> str:
+    return _official_name(p) or "без названия"
 
 
 def is_sheet_worthy(p: dict[str, Any]) -> bool:
-    """В Sheets — только лоты с реальным ИНН (10 цифр). Без «ООО с историей»."""
+    """В Sheets — строго с ИНН. Без ИНН рекламные «с историей» не попадают."""
     if p.get("is_duplicate"):
         return False
     inn = (p.get("inn") or "").strip()
     if not (inn.isdigit() and len(inn) == 10):
         return False
-    name = p.get("name") or ""
-    if _is_buyer_name(name):
+    if _is_buyer_name(p.get("name") or ""):
         return False
-    # имя из парсера может быть мусором — ок, подставим ЕГРЮЛ / ИНН
     return True
 
 
