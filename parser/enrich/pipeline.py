@@ -441,11 +441,37 @@ def _run_source(
     # limit<=0 — без потолка (все дыры за один проход источника)
     candidates = picked if limit <= 0 else picked[:limit]
     print(f"{name}: {len(candidates)} шт" + ("" if limit <= 0 else f" (лимит {limit})"))
+    try:
+        from parser.job_status import write_status
+
+        write_status(
+            stage="enrich",
+            detail=f"{name}: старт",
+            source=name,
+            current=0,
+            total=len(candidates),
+        )
+    except Exception:
+        pass
 
     captcha_streak = 0
     for i, p in enumerate(candidates, 1):
         key = p.get("inn") or p.get("ogrn") or p.get("name")
         print(f"  [{name} {i}/{len(candidates)}] {key} ...", end=" ", flush=True)
+        if i == 1 or i % 5 == 0 or i == len(candidates):
+            try:
+                from parser.job_status import write_status
+
+                write_status(
+                    stage="enrich",
+                    detail=f"{name}",
+                    source=name,
+                    current=i,
+                    total=len(candidates),
+                    key=str(key or ""),
+                )
+            except Exception:
+                pass
         updated = apply(p, pause)
         stats["attempted"] += 1
         enrich_u = updated.get("enrich") or {}
