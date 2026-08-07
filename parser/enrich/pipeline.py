@@ -673,6 +673,24 @@ def enrich_db(
             payloads = unique_only(db.all_payloads()) if unique_first else db.all_payloads()
 
         if "buh" in sources:
+
+            def _pick_buh(p: dict[str, Any]) -> bool:
+                if not (p.get("inn") or "").strip():
+                    return False
+                buh = ((p.get("enrich") or {}).get("buh") or {})
+                if buh.get("years") and not buh.get("error"):
+                    return False
+                # not_found и т.п. — карточки в БФО нет, не долбить каждый раунд
+                err = str(buh.get("error") or "").split(":", 1)[0].strip().lower()
+                if err in {
+                    "not_found",
+                    "bad_inn",
+                    "no_org_id",
+                    "bad_bfo_shape",
+                }:
+                    return False
+                return True
+
             _run_source(
                 name="БФО",
                 payloads=payloads,
@@ -680,11 +698,7 @@ def enrich_db(
                 pause=pause,
                 db=db,
                 stats=stats,
-                pick=lambda p: bool(p.get("inn"))
-                and not (
-                    ((p.get("enrich") or {}).get("buh") or {}).get("years")
-                    and not ((p.get("enrich") or {}).get("buh") or {}).get("error")
-                ),
+                pick=_pick_buh,
                 apply=apply_buh,
                 ok_key="buh_ok",
                 err_key="buh_err",
