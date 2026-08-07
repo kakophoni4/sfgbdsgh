@@ -261,16 +261,28 @@ def lookup_company(
 def status_flags(status: str) -> dict[str, str]:
     s = (status or "").lower().strip()
     liquid_markers = ("ликвидац", "в процессе ликвидации", "ликвидиров")
-    exclude_markers = ("исключ", "недействующ", "реорганизац")
+    # прекращена / исключена / недействующая — мёртвая для покупки
+    dead_markers = (
+        "прекращ",
+        "исключ",
+        "недействующ",
+        "аннулир",
+        "реорганизац",
+        "снят с учета",
+        "снята с учета",
+    )
 
     on_liquid = any(m in s for m in liquid_markers)
-    on_exclude = any(m in s for m in exclude_markers)
+    on_dead = any(m in s for m in dead_markers)
 
-    if not s or s in {"1", "0", "-"} or "действующ" in s:
-        return {"M": "ДА", "N": "ДА", "status": "действующая" if s in {"", "1", "0", "-"} else status}
+    if not s or s in {"1", "0", "-"}:
+        return {"M": "ДА", "N": "ДА", "status": "действующая"}
+    # «действующая» без маркеров смерти
+    if "действующ" in s and not on_liquid and not on_dead:
+        return {"M": "ДА", "N": "ДА", "status": status}
 
     return {
-        "M": "НЕТ" if on_liquid else "ДА",
-        "N": "НЕТ" if on_exclude else "ДА",
+        "M": "НЕТ" if (on_liquid or on_dead) else "ДА",
+        "N": "НЕТ" if on_dead else "ДА",
         "status": status,
     }
