@@ -68,7 +68,6 @@ def _checklist_fill_gaps(old: dict[str, Any], new: dict[str, Any]) -> dict[str, 
                     out[e] = new[e]
     _EXTRA_KEEP = {
         "dossier",
-        "checko_dossier",
         "employees",
         "msp",
         "sanctions",
@@ -103,11 +102,11 @@ def _now() -> str:
 
 
 def _flag_o_needs_retry(cl: dict[str, Any]) -> bool:
-    """Нет O, старые ДА/НЕТ, или ПРОВЕРИТЬ — имеет смысл перепробить Федресурс."""
+    """Нет O / старые ДА/НЕТ / ПРОВЕРИТЬ, либо дыра в V (лизинг) — снова Федресурс."""
     o = cl.get("O_clean")
-    if not o:
+    if not o or o in {"ДА", "НЕТ", "ПРОВЕРИТЬ"}:
         return True
-    return o in {"ДА", "НЕТ", "ПРОВЕРИТЬ"}
+    return _is_gap(cl.get("V_leases"))
 
 
 def _remap_checklist_labels(cl: dict[str, Any]) -> dict[str, Any]:
@@ -625,11 +624,15 @@ def enrich_db(
         if "checko" in sources:
 
             def _pick_checko(p: dict[str, Any]) -> bool:
-                """Только дыры P/L — не дергать из‑за V/I (ими заняты Федресурс/Saby)."""
                 if not _ogrn_of(p):
                     return False
                 cl = (p.get("enrich") or {}).get("checklist") or {}
-                return _is_gap(cl.get("P_court_cases")) or _is_gap(cl.get("L_debts_il"))
+                # только P/L/I — V добивает Федресурс, не жжём Checko зря
+                return (
+                    _is_gap(cl.get("P_court_cases"))
+                    or _is_gap(cl.get("L_debts_il"))
+                    or _is_gap(cl.get("I_reliable"))
+                )
 
             _run_source(
                 name="Checko",
@@ -643,11 +646,8 @@ def enrich_db(
                 ok_key="checko_ok",
                 err_key="checko_err",
                 summary=lambda u: (
-                    ((u.get("enrich") or {}).get("checklist") or {}).get("checko_dossier")
-                    or (
-                        f"суды: {(u.get('enrich') or {}).get('checklist', {}).get('P_court_cases')} "
-                        f"долги: {(u.get('enrich') or {}).get('checklist', {}).get('L_debts_il')}"
-                    )
+                    f"P={(u.get('enrich') or {}).get('checklist', {}).get('P_court_cases')} "
+                    f"L={(u.get('enrich') or {}).get('checklist', {}).get('L_debts_il')}"
                 ),
             )
             payloads = unique_only(db.all_payloads()) if unique_first else db.all_payloads()

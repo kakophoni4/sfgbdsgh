@@ -272,5 +272,16 @@ def export_xlsx(
     )
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(path)
-    return path
+    try:
+        wb.save(path)
+        return path
+    except PermissionError:
+        # файл открыт в Excel — пишем рядом с меткой времени
+        from datetime import datetime
+
+        alt = path.with_name(
+            f"{path.stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{path.suffix}"
+        )
+        wb.save(alt)
+        print(f"Excel занят ({path.name}) — сохранено как {alt.name}")
+        return alt
