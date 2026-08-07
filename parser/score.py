@@ -155,13 +155,7 @@ def score_payload(p: dict[str, Any]) -> dict:
         reasons.append(
             f"обороты по БФО ≥ 500к (макс ~{(turn_buh or turn):,} ₽)".replace(",", " ")
         )
-        price = p.get("price_rub")
-        if price and turn > 0 and price / turn <= 0.15:
-            score += 8
-            reasons.append("цена низкая относительно оборотов БФО")
-        elif price and turn > 0 and price / turn >= 1.0:
-            score -= 10
-            risks.append("цена высокая относительно оборотов БФО")
+        # цена vs обороты — в _price_judgment (чтобы не дублировать)
     elif r_raw.startswith("мало") or r_raw in {"НЕТ", "отчётность есть, выручка не указана"}:
         score -= 6
         risks.append("по БФО обороты ≤ 500к / выручка не указана")
@@ -174,15 +168,6 @@ def score_payload(p: dict[str, Any]) -> dict:
     elif turn_tg >= 500_000:
         score += 12
         reasons.append(f"обороты в тексте ≥ 500к (макс ~{turn_tg:,} ₽)".replace(",", " "))
-        price = p.get("price_rub")
-        if price and turn_tg > 0:
-            ratio = price / turn_tg
-            if ratio <= 0.15:
-                score += 8
-                reasons.append("цена выглядит низкой относительно оборотов")
-            elif ratio >= 1.0:
-                score -= 10
-                risks.append("цена высокая относительно заявленных оборотов")
     elif tg_revs:
         score -= 4
         risks.append("обороты в тексте < 500к")
@@ -298,18 +283,13 @@ def score_payload(p: dict[str, Any]) -> dict:
         reasons.append("свежее объявление (один раз в выборке)")
 
     price = p.get("price_rub")
-    if price:
-        if price < 20_000:
-            score -= 5
-            risks.append("очень низкая цена — проверить комплект")
-        elif 50_000 <= price <= 400_000:
-            score += 3
-        elif price >= 1_500_000 and turn < 10_000_000:
-            score -= 6
-            risks.append("дорогая лавка при средних/неясных оборотах")
-    else:
-        score -= 8
-        risks.append("цена не распознана")
+    price_view = _price_judgment(price=price, turn=turn, reg_year=reg_year, r_raw=r_raw)
+    if price_view["delta"]:
+        score += price_view["delta"]
+    if price_view["risk"]:
+        risks.append(price_view["risk"])
+    if price_view["reason"]:
+        reasons.append(price_view["reason"])
 
     score = max(0, min(100, score))
 
@@ -363,6 +343,7 @@ def score_payload(p: dict[str, Any]) -> dict:
         turn=turn,
         listing_days=listing_days,
         listing_count=listing_count,
+        price_view=price_view,
     )
 
     return {
@@ -372,6 +353,7 @@ def score_payload(p: dict[str, Any]) -> dict:
         "confidence": confidence,
         "reasons": reasons,
         "risks": risks,
+        "price_label": price_view.get("label") or "",
         "summary": summary,
         "turnover_recent": turn,
         "reg_before_2024": "ДА"
@@ -395,6 +377,143 @@ def score_payload(p: dict[str, Any]) -> dict:
             and not (p.get("enrich") or {}).get("buh", {}).get("error")
         ),
     }
+
+
+def _price_judgment(
+    *,
+    price: Any,
+    turn: int,
+    reg_year: Any,
+    r_raw: str,
+) -> dict[str, Any]:
+    """
+    Человеческая оценка цены готового ООО относительно рынка и оборотов.
+    label — коротко для Итога; delta — к баллу; risk/reason — в списки скоринга.
+    """
+    out: dict[str, Any] = {
+        "label": "",
+        "blurb": "",
+        "delta": 0,
+        "risk": "",
+        "reason": "",
+    }
+    try:
+        price_i = int(price) if price not in (None, "") else 0
+    except (TypeError, ValueError):
+        price_i = 0
+    if not price_i:
+        out["label"] = "цена неясна"
+        out["blurb"] = "Цену из объявления не распознали — сравнивать с рынком нельзя."
+        out["delta"] = -8
+        out["risk"] = "цена не распознана"
+        return out
+
+    price_s = f"{price_i:,} ₽".replace(",", " ")
+    young = bool(reg_year and int(reg_year) >= 2024)
+    thin_turn = (
+        turn < 500_000
+        or str(r_raw).startswith("мало")
+        or "выручка не указана" in str(r_raw)
+        or str(r_raw).startswith("нет данных")
+        or not str(r_raw).strip()
+    )
+
+    # 1) относительно оборотов БФО/поста (если обороты живые)
+    if turn >= 500_000:
+        ratio = price_i / turn
+        pct = int(round(ratio * 100))
+        turn_s = f"{turn:,}".replace(",", " ")
+        if ratio <= 0.12:
+            out["label"] = "выгодно к оборотам"
+            out["blurb"] = (
+                f"Цена {price_s} — примерно {pct}% от оборота (~{turn_s} ₽), "
+                f"выглядит выгодно относительно выручки."
+            )
+            out["delta"] = 8
+            out["reason"] = "цена низкая относительно оборотов"
+        elif ratio <= 0.35:
+            out["label"] = "адекватно к оборотам"
+            out["blurb"] = (
+                f"Цена {price_s} — около {pct}% от оборота (~{turn_s} ₽), "
+                f"к выручке выглядит нормально."
+            )
+            out["delta"] = 3
+            out["reason"] = "цена адекватна оборотам"
+        elif ratio < 1.0:
+            out["label"] = "дороговато к оборотам"
+            out["blurb"] = (
+                f"Цена {price_s} — уже ~{pct}% от оборота (~{turn_s} ₽): "
+                f"дороговато, если не покупаешь за особый актив/лицензию."
+            )
+            out["delta"] = -6
+            out["risk"] = "цена дороговато относительно оборотов"
+        else:
+            out["label"] = "дорого к оборотам"
+            out["blurb"] = (
+                f"Цена {price_s} ≥ оборота (~{turn_s} ₽) — "
+                f"дорого: либо переплата, либо в цене что-то кроме «пустой» фирмы."
+            )
+            out["delta"] = -10
+            out["risk"] = "цена высокая относительно оборотов"
+        return out
+
+    # 2) без живых оборотов — ориентир рынка готовых ООО
+    if price_i < 20_000:
+        out["label"] = "подозрительно дёшево"
+        out["blurb"] = (
+            f"Цена {price_s} — очень низкая для ООО; проверь комплект, долги и почему так отдают."
+        )
+        out["delta"] = -5
+        out["risk"] = "очень низкая цена — проверить комплект"
+    elif price_i <= 80_000:
+        out["label"] = "дешево / типично для нулёвки"
+        out["blurb"] = (
+            f"Цена {price_s} — в диапазоне недорогих готовых ООО"
+            + (" (молодая компания)" if young else "")
+            + "; для нулёвки нормально, за живой бизнес маловато."
+        )
+        out["delta"] = 2 if thin_turn else 0
+        out["reason"] = "цена в типичном диапазоне недорогой нулёвки"
+    elif price_i <= 400_000:
+        out["label"] = "норма по рынку готовых ООО"
+        out["blurb"] = (
+            f"Цена {price_s} — обычный рынок готовых ООО"
+            + (
+                ", но оборотов почти нет — платишь за историю/ЗСК/комплект, не за выручку"
+                if thin_turn
+                else ""
+            )
+            + "."
+        )
+        out["delta"] = 3
+        out["reason"] = "цена в типичном диапазоне 50–400к"
+    elif price_i <= 900_000:
+        out["label"] = "дороговато без оборотов" if thin_turn else "выше среднего"
+        out["blurb"] = (
+            f"Цена {price_s} — уже дороговато"
+            + (
+                " для фирмы без заметной выручки: либо хороший комплект/возраст, либо переплата"
+                if thin_turn
+                else " относительно среднего чека готовых ООО"
+            )
+            + "."
+        )
+        out["delta"] = -5 if thin_turn else -2
+        out["risk"] = "дороговато при слабых/неясных оборотах"
+    else:
+        out["label"] = "дорого"
+        out["blurb"] = (
+            f"Цена {price_s} — высокая для готового ООО"
+            + (
+                " без крупных оборотов: я бы не брал без понятной причины (лицензии, контракты, история)"
+                if thin_turn or turn < 10_000_000
+                else ""
+            )
+            + "."
+        )
+        out["delta"] = -8 if thin_turn or turn < 10_000_000 else -3
+        out["risk"] = "дорогая лавка при средних/неясных оборотах"
+    return out
 
 
 def _parse_dossier_bits(dossier: str) -> dict[str, str]:
@@ -451,6 +570,7 @@ def _build_human_verdict(
     turn: int,
     listing_days: int,
     listing_count: int,
+    price_view: dict[str, Any] | None = None,
 ) -> str:
     """Живой полный вердикт: реестры + Companium + финансы + пост."""
     import re
@@ -463,30 +583,39 @@ def _build_human_verdict(
     director = str(checklist.get("F_director") or "").strip()
     address = str(checklist.get("F_address") or "").strip()
     reg_date = str(checklist.get("C_reg_date") or p.get("reg_date_raw") or "").strip()
+    pv = price_view or {}
+    price_tag = str(pv.get("label") or "").strip()
 
     if verdict == "ДА":
         lead = (
-            f"Беру в работу: {name} за {price_s}. "
-            f"Оценка {score} из 100 — лот выглядит интересным"
+            f"Беру в работу: {name} за {price_s}"
+            + (f" ({price_tag})" if price_tag else "")
+            + f". Оценка {score} из 100 — лот выглядит интересным"
             + (f", ИНН {inn}" if inn else "")
             + "."
         )
     elif verdict == "СОМНИТЕЛЬНО":
         lead = (
-            f"Пока на паузе: {name} за {price_s}. Оценка {score} из 100 — "
+            f"Пока на паузе: {name} за {price_s}"
+            + (f" ({price_tag})" if price_tag else "")
+            + f". Оценка {score} из 100 — "
             f"есть смысл смотреть, но без ручной проверки брать нельзя"
             + (f" (ИНН {inn})" if inn else " (ИНН пока нет)")
             + "."
         )
     else:
         lead = (
-            f"Скорее пропускаю: {name} за {price_s}. Оценка {score} из 100 — "
+            f"Скорее пропускаю: {name} за {price_s}"
+            + (f" ({price_tag})" if price_tag else "")
+            + f". Оценка {score} из 100 — "
             f"рисков или дыр в данных слишком много"
             + (f", ИНН {inn}" if inn else "")
             + "."
         )
 
     paras = [lead]
+    if pv.get("blurb"):
+        paras.append(str(pv["blurb"]))
 
     # Карточка ЕГРЮЛ одной фразой
     card: list[str] = []
