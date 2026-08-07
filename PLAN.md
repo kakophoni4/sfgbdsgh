@@ -67,9 +67,14 @@ python run_parser.py --export-only
 python run_parser.py --enrich-buh --enrich-limit 20
 ```
 
-Дальше в фазе 3b:
-| L долги/ИЛ | ФНС задолженность + ФССП | да |
-| P арбитраж | КАД / ФНС | да → ЕСТЬ/НЕТ |
+### Фаза 3b — ФССП + КАД ✅ (код; на сервере проверить)
+| L долги/ИЛ | ФССП (часто капча → ПРОВЕРИТЬ) | полуавто |
+| P арбитраж | КАД SearchInstances | полуавто |
+
+```bash
+python run_parser.py --rescore
+python run_parser.py --enrich-kad --enrich-fssp --enrich-limit 20
+```
 
 ### Фаза 4 — риски учредителей
 | Колонка | Источник |

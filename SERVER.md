@@ -110,8 +110,17 @@ cd C:\firmy
 |------|--------|
 | egrul.nalog.ru | статус, адрес, M/N |
 | bo.nalog.ru | K / R / U |
+| kad.arbitr.ru | P арбитраж |
+| fssp.gov.ru | L долги/ИЛ (часто капча → ПРОВЕРИТЬ) |
 | service.nalog.ru | дальше (дисквал) |
-| fssp.gov.ru | дальше (долги) |
+
+После обновления кода на сервере:
+
+```powershell
+python run_parser.py --rescore
+python run_parser.py --enrich-kad --enrich-fssp --enrich-limit 20
+python run_parser.py --export-only
+```
 
 ## 7. Linux-скрипты
 

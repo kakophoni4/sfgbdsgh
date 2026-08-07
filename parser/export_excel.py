@@ -109,11 +109,12 @@ def row_from_payload(p: dict[str, Any]) -> list[Any]:
         "",  # I
         j_hint,
         checklist.get("K_loans_payables") or "",
-        "продавец: без долгов" if p.get("no_debts_claim") else "",
+        checklist.get("L_debts_il")
+        or ("продавец: без долгов" if p.get("no_debts_claim") else ""),
         checklist.get("M_not_liquidating") or "",
         checklist.get("N_not_excluding") or "",
         "",  # O
-        "",  # P
+        checklist.get("P_court_cases") or "",
         q_hint,
         checklist.get("R_turnover") or scoring.get("has_turnover_flag") or "",
         _zsk_cell(p.get("zsk_claim") or ""),

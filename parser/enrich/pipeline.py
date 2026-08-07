@@ -4,7 +4,7 @@ import random
 import re
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from config import ENRICH_JITTER, ENRICH_PAUSE
 from parser.db import ListingDB
@@ -12,6 +12,8 @@ from parser.score import score_payload
 
 from .buh import checklist_from_buh, fetch_buh
 from .egrul import lookup_company, status_flags
+from .fssp import checklist_from_fssp, fetch_fssp
+from .kad import checklist_from_kad, fetch_kad
 
 
 def _now() -> str:
@@ -19,7 +21,6 @@ def _now() -> str:
 
 
 def _sleep(pause: float | None = None) -> float:
-    """Пауза + джиттер, чтобы не капчило."""
     base = ENRICH_PAUSE if pause is None else pause
     delay = max(0.5, base + random.uniform(0, max(0.0, ENRICH_JITTER)))
     time.sleep(delay)
@@ -92,18 +93,101 @@ def apply_buh(payload: dict[str, Any], pause: float = 1.0) -> dict[str, Any]:
     if not inn:
         return _merge_enrich(p, buh={"error": "no_inn"})
 
-    # внутренние паузы fetch_buh оставляем короткими; основная — между лотами
     report = fetch_buh(inn, pause=min(pause, 2.0) if pause else 1.0)
     _sleep(pause)
     if report.error:
         return _merge_enrich(p, buh=report.to_dict())
+    return _merge_enrich(p, buh=report.to_dict(), checklist=checklist_from_buh(report))
 
-    cl = checklist_from_buh(report)
-    # подмешиваем официальные обороты в payload для скоринга
-    if cl.get("revenues"):
-        # не затираем текстовые из TG полностью — кладём отдельно, score читает buh
-        pass
-    return _merge_enrich(p, buh=report.to_dict(), checklist=cl)
+
+def apply_kad(payload: dict[str, Any], pause: float = 1.0) -> dict[str, Any]:
+    p = dict(payload)
+    inn = (p.get("inn") or "").strip()
+    if not inn:
+        return _merge_enrich(p, kad={"error": "no_inn"})
+    report = fetch_kad(inn)
+    _sleep(pause)
+    return _merge_enrich(p, kad=report.to_dict(), checklist=checklist_from_kad(report))
+
+
+def apply_fssp(payload: dict[str, Any], pause: float = 1.0) -> dict[str, Any]:
+    p = dict(payload)
+    inn = (p.get("inn") or "").strip()
+    if not inn:
+        return _merge_enrich(p, fssp={"error": "no_inn"})
+    report = fetch_fssp(inn)
+    _sleep(pause)
+    return _merge_enrich(p, fssp=report.to_dict(), checklist=checklist_from_fssp(report))
+
+
+def rescore_db(db: ListingDB) -> dict[str, int]:
+    """Пересчёт M/N/status и score по уже сохранённым enrich (без сети)."""
+    fixed = 0
+    for p in db.all_payloads():
+        enrich = p.get("enrich") or {}
+        egrul = enrich.get("egrul") or {}
+        if egrul.get("inn") and not egrul.get("error"):
+            flags = status_flags(egrul.get("status") or "")
+            cl = dict(enrich.get("checklist") or {})
+            cl["M_not_liquidating"] = flags["M"]
+            cl["N_not_excluding"] = flags["N"]
+            cl["status"] = flags["status"]
+            # поправить и в egrul.status если был "1"
+            if str(egrul.get("status") or "") in {"1", "0", "-"}:
+                egrul = dict(egrul)
+                egrul["status"] = "действующая"
+            p = _merge_enrich(p, egrul=egrul, checklist=cl)
+            fixed += 1
+        else:
+            p["scoring"] = score_payload(p)
+        db.save_payload(p)
+    return {"rescored": fixed, "total": len(db.all_payloads())}
+
+
+def _run_source(
+    *,
+    name: str,
+    payloads: list[dict[str, Any]],
+    limit: int,
+    pause: float,
+    db: ListingDB,
+    stats: dict[str, int],
+    pick: Callable[[dict[str, Any]], bool],
+    apply: Callable[[dict[str, Any], float], dict[str, Any]],
+    ok_key: str,
+    err_key: str,
+    summary: Callable[[dict[str, Any]], str],
+) -> None:
+    candidates = [p for p in payloads if pick(p)][:limit]
+    print(f"{name}: {len(candidates)} шт")
+    for i, p in enumerate(candidates, 1):
+        key = p.get("inn") or p.get("ogrn") or p.get("name")
+        print(f"  [{name} {i}/{len(candidates)}] {key} ...", end=" ", flush=True)
+        updated = apply(p, pause)
+        stats["attempted"] += 1
+        if apply is apply_egrul:
+            src_block = (updated.get("enrich") or {}).get("egrul") or {}
+        elif apply is apply_buh:
+            src_block = (updated.get("enrich") or {}).get("buh") or {}
+        elif apply is apply_kad:
+            src_block = (updated.get("enrich") or {}).get("kad") or {}
+        else:
+            src_block = (updated.get("enrich") or {}).get("fssp") or {}
+
+        # kad/fssp при ошибке всё равно пишут ПРОВЕРИТЬ в checklist
+        if src_block.get("error") and apply not in (apply_kad, apply_fssp):
+            stats[err_key] += 1
+            print(f"ERR {src_block.get('error')}")
+            db.save_payload(updated)
+            if src_block.get("error") == "captcha" and apply is apply_egrul:
+                print("Капча ЕГРЮЛ — стоп.")
+                raise StopIteration
+            continue
+
+        stats[ok_key] += 1
+        prefix = "SOFT" if src_block.get("error") else "OK"
+        print(prefix, summary(updated))
+        db.save_payload(updated)
 
 
 def enrich_db(
@@ -115,25 +199,23 @@ def enrich_db(
     unique_first: bool = True,
     sources: list[str] | None = None,
 ) -> dict[str, int]:
-    """
-    sources: egrul, buh (по умолчанию оба, если передано явно — только они)
-    pause=None → берём ENRICH_PAUSE из config/.env (+ джиттер)
-    """
     from parser.dedup import unique_only
 
     if pause is None:
         pause = ENRICH_PAUSE
 
-    sources = sources or ["egrul", "buh"]
-    payloads = db.all_payloads()
-    if unique_first:
-        payloads = unique_only(payloads)
+    sources = sources or ["egrul", "buh", "kad", "fssp"]
+    payloads = unique_only(db.all_payloads()) if unique_first else db.all_payloads()
 
     stats = {
         "egrul_ok": 0,
         "egrul_err": 0,
         "buh_ok": 0,
         "buh_err": 0,
+        "kad_ok": 0,
+        "kad_err": 0,
+        "fssp_ok": 0,
+        "fssp_err": 0,
         "attempted": 0,
     }
 
@@ -142,67 +224,87 @@ def enrich_db(
         f"(~{pause:.0f}–{pause + ENRICH_JITTER:.0f}s между запросами)"
     )
 
-    # --- ЕГРЮЛ ---
-    if "egrul" in sources:
-        candidates: list[dict[str, Any]] = []
-        for p in payloads:
-            enrich = p.get("enrich") or {}
-            egrul = enrich.get("egrul") or {}
-            if egrul.get("inn") and not egrul.get("error"):
-                continue
-            if only_with_key and not (p.get("inn") or p.get("ogrn")):
-                continue
-            candidates.append(p)
-        candidates = candidates[:limit]
-        print(f"ЕГРЮЛ: {len(candidates)} шт")
-        for i, p in enumerate(candidates, 1):
-            key = p.get("inn") or p.get("ogrn") or p.get("name")
-            print(f"  [egrul {i}/{len(candidates)}] {key} ...", end=" ", flush=True)
-            updated = apply_egrul(p, pause=pause)
-            egrul = (updated.get("enrich") or {}).get("egrul") or {}
-            stats["attempted"] += 1
-            if egrul.get("error"):
-                stats["egrul_err"] += 1
-                print(f"ERR {egrul.get('error')}")
-                db.save_payload(updated)
-                if egrul.get("error") == "captcha":
-                    print("Капча ЕГРЮЛ — стоп. Увеличь ENRICH_PAUSE и повтори позже.")
-                    break
-            else:
-                stats["egrul_ok"] += 1
-                print(f"OK inn={egrul.get('inn')} status={egrul.get('status')}")
-                db.save_payload(updated)
+    try:
+        if "egrul" in sources:
+
+            def _pick_egrul(p: dict[str, Any]) -> bool:
+                if only_with_key and not (p.get("inn") or p.get("ogrn")):
+                    return False
+                eg = (p.get("enrich") or {}).get("egrul") or {}
+                return not (eg.get("inn") and not eg.get("error"))
+
+            _run_source(
+                name="ЕГРЮЛ",
+                payloads=payloads,
+                limit=limit,
+                pause=pause,
+                db=db,
+                stats=stats,
+                pick=_pick_egrul,
+                apply=apply_egrul,
+                ok_key="egrul_ok",
+                err_key="egrul_err",
+                summary=lambda u: f"inn={(u.get('enrich') or {}).get('egrul', {}).get('inn')} "
+                f"status={(u.get('enrich') or {}).get('checklist', {}).get('status')}",
+            )
             payloads = unique_only(db.all_payloads()) if unique_first else db.all_payloads()
 
-    # --- БФО ---
-    if "buh" in sources:
-        payloads = unique_only(db.all_payloads()) if unique_first else db.all_payloads()
-        candidates = []
-        for p in payloads:
-            if not p.get("inn"):
-                continue
-            buh = (p.get("enrich") or {}).get("buh") or {}
-            if buh.get("years") and not buh.get("error"):
-                continue
-            candidates.append(p)
-        candidates = candidates[:limit]
-        print(f"БФО: {len(candidates)} шт")
-        for i, p in enumerate(candidates, 1):
-            inn = p.get("inn")
-            print(f"  [buh {i}/{len(candidates)}] {inn} ...", end=" ", flush=True)
-            updated = apply_buh(p, pause=pause)
-            buh = (updated.get("enrich") or {}).get("buh") or {}
-            stats["attempted"] += 1
-            if buh.get("error"):
-                stats["buh_err"] += 1
-                print(f"ERR {buh.get('error')}")
-            else:
-                stats["buh_ok"] += 1
-                cl = (updated.get("enrich") or {}).get("checklist") or {}
-                print(
-                    f"OK R={cl.get('R_turnover')} U={cl.get('U_reports_filed')} "
-                    f"yrs={len(buh.get('years') or [])}"
-                )
-            db.save_payload(updated)
+        if "buh" in sources:
+            _run_source(
+                name="БФО",
+                payloads=payloads,
+                limit=limit,
+                pause=pause,
+                db=db,
+                stats=stats,
+                pick=lambda p: bool(p.get("inn"))
+                and not (
+                    ((p.get("enrich") or {}).get("buh") or {}).get("years")
+                    and not ((p.get("enrich") or {}).get("buh") or {}).get("error")
+                ),
+                apply=apply_buh,
+                ok_key="buh_ok",
+                err_key="buh_err",
+                summary=lambda u: (
+                    f"R={(u.get('enrich') or {}).get('checklist', {}).get('R_turnover')} "
+                    f"U={(u.get('enrich') or {}).get('checklist', {}).get('U_reports_filed')}"
+                ),
+            )
+            payloads = unique_only(db.all_payloads()) if unique_first else db.all_payloads()
+
+        if "kad" in sources:
+            _run_source(
+                name="КАД",
+                payloads=payloads,
+                limit=limit,
+                pause=pause,
+                db=db,
+                stats=stats,
+                pick=lambda p: bool(p.get("inn"))
+                and "P_court_cases" not in ((p.get("enrich") or {}).get("checklist") or {}),
+                apply=apply_kad,
+                ok_key="kad_ok",
+                err_key="kad_err",
+                summary=lambda u: f"P={(u.get('enrich') or {}).get('checklist', {}).get('P_court_cases')}",
+            )
+            payloads = unique_only(db.all_payloads()) if unique_first else db.all_payloads()
+
+        if "fssp" in sources:
+            _run_source(
+                name="ФССП",
+                payloads=payloads,
+                limit=limit,
+                pause=pause,
+                db=db,
+                stats=stats,
+                pick=lambda p: bool(p.get("inn"))
+                and "L_debts_il" not in ((p.get("enrich") or {}).get("checklist") or {}),
+                apply=apply_fssp,
+                ok_key="fssp_ok",
+                err_key="fssp_err",
+                summary=lambda u: f"L={(u.get('enrich') or {}).get('checklist', {}).get('L_debts_il')}",
+            )
+    except StopIteration:
+        pass
 
     return stats

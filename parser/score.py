@@ -153,9 +153,29 @@ def score_payload(p: dict[str, Any]) -> dict:
             score += 2
             reasons.append("займы/кредиторка по БФО пустые/0")
         elif "займы=" in k or "кредиторка=" in k:
-            # наличие долга не всегда плохо, но отмечаем
             score -= 2
             risks.append("есть займы/кредиторка по БФО")
+
+    # L / P из ФССП / КАД
+    if buh_cl.get("L_debts_il") == "ДА":
+        score += 6
+        reasons.append("ФССП: долгов/ИЛ не видно")
+    elif buh_cl.get("L_debts_il") == "НЕТ":
+        score -= 20
+        risks.append("ФССП: есть исполнительные производства")
+    elif buh_cl.get("L_debts_il") == "ПРОВЕРИТЬ":
+        score -= 2
+        risks.append("ФССП не проверен автоматически")
+
+    if buh_cl.get("P_court_cases") == "НЕТ":
+        score += 6
+        reasons.append("КАД: дел не найдено")
+    elif buh_cl.get("P_court_cases") == "ЕСТЬ":
+        score -= 12
+        risks.append("КАД: есть арбитражные дела")
+    elif buh_cl.get("P_court_cases") == "ПРОВЕРИТЬ":
+        score -= 2
+        risks.append("КАД не проверен автоматически")
 
     if p.get("has_account_claim") == "no":
         score -= 5

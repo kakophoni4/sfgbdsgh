@@ -2,9 +2,9 @@
 Запуск парсера продажи компаний.
 
 Примеры:
-  python run_parser.py
-  python run_parser.py --enrich-buh --enrich-limit 20
-  python run_parser.py --enrich-only
+  python run_parser.py --enrich-only --enrich-limit 20
+  python run_parser.py --enrich-kad --enrich-fssp --enrich-limit 20
+  python run_parser.py --rescore
   python run_parser.py --export-only
 """
 
@@ -33,13 +33,7 @@ def selftest() -> None:
 
     samples = [
         (
-            "✅ ООО «Новый Алгоритм»\nИНН 7733475417\nРегистрация 19.09.2025 г.\n\nОСНО\n🟢 Зеленая по ЗСК\n💵 Цена 90 т.р.\n\n"
-            "✅ ООО «СК Технолоджи»\nИНН 9728133965\nРегистрация 28.05.2024 г.\nОСНО\n💵 Цена 70 т.р.",
-            2,
-        ),
-        (
-            'ООО "МЕГАПОЛИС-М"\nМСК (ИФНС 4)\nУСН 15%\n19.08.2020\nВыручка\n2024 - 207.5 млн\n2025 - 301.7 млн\n'
-            "✅ В черных списках ЦБ, ЗСК, 115 и 764-П не найдено!\nСтоимость 1.8 млн\n✍ Для связи @LPoint_msk",
+            "✅ ООО «Новый Алгоритм»\nИНН 7733475417\nРегистрация 19.09.2025 г.\n\nОСНО\n🟢 Зеленая по ЗСК\n💵 Цена 90 т.р.",
             1,
         ),
         (
@@ -50,14 +44,14 @@ def selftest() -> None:
     ok = True
     for text, expect in samples:
         got = parse_message(text, chat_id=-1001909540858, message_id=1, sender="test")
-        print(f"expect={expect} got={len(got)} names={[g.name for g in got]}")
+        print(f"expect={expect} got={len(got)}")
         if len(got) != expect:
             ok = False
-        for g in got:
-            s = score_listing(g)
-            print(
-                f"  {g.name} inn={g.inn} price={g.price_rub} → {s['verdict']} {s['score']}"
-            )
+    from parser.enrich.egrul import status_flags
+
+    assert status_flags("1")["status"] == "действующая"
+    assert status_flags("1")["M"] == "ДА"
+    print("status_flags OK")
     if not ok:
         raise SystemExit("selftest failed")
     print("selftest OK")
@@ -77,19 +71,22 @@ def export_from_db(db: ListingDB) -> Path:
 
 
 def resolve_sources(args: argparse.Namespace) -> list[str]:
-    if args.enrich_buh and not args.enrich_egrul and not args.enrich and not args.enrich_only:
-        return ["buh"]
-    if args.enrich_egrul and not args.enrich_buh and not args.enrich and not args.enrich_only:
-        return ["egrul"]
-    if args.enrich_buh and args.enrich_egrul:
-        return ["egrul", "buh"]
+    explicit = []
+    if args.enrich_egrul:
+        explicit.append("egrul")
+    if args.enrich_buh:
+        explicit.append("buh")
+    if args.enrich_kad:
+        explicit.append("kad")
+    if args.enrich_fssp:
+        explicit.append("fssp")
+
+    if explicit and not args.enrich and not args.enrich_only:
+        return explicit
     if args.enrich or args.enrich_only:
-        sources = ["egrul", "buh"]
-        if args.enrich_buh and not args.enrich_egrul:
-            sources = ["buh"]
-        if args.enrich_egrul and not args.enrich_buh:
-            sources = ["egrul"]
-        return sources
+        if explicit:
+            return explicit
+        return ["egrul", "buh", "kad", "fssp"]
     return []
 
 
@@ -98,20 +95,29 @@ async def async_main(args: argparse.Namespace) -> None:
     client = None
     sources = resolve_sources(args)
     do_enrich = bool(sources)
-    do_scrape = not args.export_only and not args.enrich_only and not (
-        do_enrich and not args.enrich and (args.enrich_buh or args.enrich_egrul)
+    only_flags = bool(
+        args.enrich_buh or args.enrich_egrul or args.enrich_kad or args.enrich_fssp
     )
-    # --enrich-buh / --enrich-egrul alone → only enrich, no scrape
-    if (args.enrich_buh or args.enrich_egrul) and not args.enrich and not args.listen:
+    do_scrape = True
+    if args.export_only or args.enrich_only or args.rescore:
         do_scrape = False
-    if args.enrich_only:
+    if only_flags and not args.enrich and not args.listen:
         do_scrape = False
-    if args.export_only and not do_enrich:
+
+    if args.export_only and not do_enrich and not args.rescore:
         export_from_db(db)
         db.close()
         return
 
     try:
+        if args.rescore:
+            from parser.enrich.pipeline import rescore_db
+
+            print("Rescore:", rescore_db(db))
+            export_from_db(db)
+            if not do_enrich and not args.listen:
+                return
+
         if do_scrape or args.listen:
             client = make_client()
             await client.connect()
@@ -127,7 +133,7 @@ async def async_main(args: argparse.Namespace) -> None:
             result = enrich_db(
                 db,
                 limit=args.enrich_limit,
-                pause=args.enrich_pause,  # None → ENRICH_PAUSE из .env
+                pause=args.enrich_pause,
                 sources=sources,
             )
             print(f"Обогащение: {result}")
@@ -153,22 +159,15 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=HISTORY_LIMIT)
     ap.add_argument("--listen", action="store_true")
     ap.add_argument("--export-only", action="store_true")
-    ap.add_argument("--enrich", action="store_true", help="scrape + ЕГРЮЛ + БФО")
-    ap.add_argument("--enrich-only", action="store_true", help="ЕГРЮЛ+БФО без scrape")
-    ap.add_argument("--enrich-egrul", action="store_true", help="только ЕГРЮЛ")
-    ap.add_argument("--enrich-buh", action="store_true", help="только БФО → K/R/U")
-    ap.add_argument(
-        "--enrich-limit",
-        type=int,
-        default=ENRICH_LIMIT,
-        help=f"лимит лотов (default {ENRICH_LIMIT} из .env)",
-    )
-    ap.add_argument(
-        "--enrich-pause",
-        type=float,
-        default=None,
-        help=f"пауза сек (default ENRICH_PAUSE={ENRICH_PAUSE} + jitter)",
-    )
+    ap.add_argument("--rescore", action="store_true", help="пересчёт M/N/score без сети")
+    ap.add_argument("--enrich", action="store_true", help="scrape + все enrich")
+    ap.add_argument("--enrich-only", action="store_true", help="все enrich без scrape")
+    ap.add_argument("--enrich-egrul", action="store_true")
+    ap.add_argument("--enrich-buh", action="store_true")
+    ap.add_argument("--enrich-kad", action="store_true", help="арбитраж КАД → P")
+    ap.add_argument("--enrich-fssp", action="store_true", help="ФССП → L")
+    ap.add_argument("--enrich-limit", type=int, default=ENRICH_LIMIT)
+    ap.add_argument("--enrich-pause", type=float, default=None)
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
 

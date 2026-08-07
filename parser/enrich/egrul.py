@@ -84,8 +84,9 @@ def _get(session, url: str) -> dict:
 
 
 def _row_to_record(row: dict[str, Any]) -> EgrulRecord:
-    status = (row.get("e") or row.get("cnt") or "").strip()
-    if not status:
+    # e — дата/признак прекращения; cnt — служебный счётчик (НЕ статус!)
+    status = (row.get("e") or "").strip()
+    if not status or status in {"1", "0", "-"}:
         status = "действующая"
     return EgrulRecord(
         name=(row.get("c") or row.get("n") or "").strip(),
@@ -171,15 +172,15 @@ def lookup_company(
 
 
 def status_flags(status: str) -> dict[str, str]:
-    s = (status or "").lower()
+    s = (status or "").lower().strip()
     liquid_markers = ("ликвидац", "в процессе ликвидации", "ликвидиров")
     exclude_markers = ("исключ", "недействующ", "реорганизац")
 
     on_liquid = any(m in s for m in liquid_markers)
     on_exclude = any(m in s for m in exclude_markers)
 
-    if not s or "действующ" in s:
-        return {"M": "ДА", "N": "ДА", "status": status or "действующая"}
+    if not s or s in {"1", "0", "-"} or "действующ" in s:
+        return {"M": "ДА", "N": "ДА", "status": "действующая" if s in {"", "1", "0", "-"} else status}
 
     return {
         "M": "НЕТ" if on_liquid else "ДА",
