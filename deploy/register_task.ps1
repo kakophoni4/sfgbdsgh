@@ -1,9 +1,12 @@
-# Регистрация задания в Планировщике Windows (каждые 6 часов).
-# Запуск от администратора:
-#   .\deploy\register_task.ps1
+# Register Windows Scheduled Task (every 1 hour).
+# Run as Administrator:
+#   powershell -ExecutionPolicy Bypass -File deploy\register_task.ps1
 
 $ErrorActionPreference = "Stop"
-$Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+$Root = "C:\firmy"
+if (-not (Test-Path $Root)) {
+    $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+}
 $script = Join-Path $Root "deploy\run_job.ps1"
 $taskName = "FirmParser"
 
@@ -13,7 +16,7 @@ $action = New-ScheduledTaskAction `
     -WorkingDirectory $Root
 
 $trigger = @(
-    (New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5) -RepetitionInterval (New-TimeSpan -Hours 6) -RepetitionDuration ([TimeSpan]::MaxValue)),
+    (New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration ([TimeSpan]::MaxValue)),
     (New-ScheduledTaskTrigger -AtStartup)
 )
 
@@ -21,17 +24,18 @@ $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
     -StartWhenAvailable `
-    -ExecutionTimeLimit (New-TimeSpan -Hours 6)
+    -ExecutionTimeLimit (New-TimeSpan -Hours 2) `
+    -MultipleInstances IgnoreNew
 
 Register-ScheduledTask `
     -TaskName $taskName `
     -Action $action `
     -Trigger $trigger `
     -Settings $settings `
-    -Description "Парсер продажи ООО: Telegram + ЕГРЮЛ/БФО" `
+    -Description "Firm parser: Telegram scrape + enrich + Excel/Sheets hourly" `
     -Force | Out-Null
 
-Write-Host "Задание '$taskName' зарегистрировано (каждые 6ч + при старте)."
-Write-Host "Проверка: Get-ScheduledTask -TaskName $taskName"
-Write-Host "Ручной запуск: Start-ScheduledTask -TaskName $taskName"
-Write-Host "Логи: $Root\data\logs\"
+Write-Host "Task '$taskName' registered: every 1 hour + at startup."
+Write-Host "Check: Get-ScheduledTask -TaskName $taskName"
+Write-Host "Run now: Start-ScheduledTask -TaskName $taskName"
+Write-Host "Logs: $Root\data\logs\"

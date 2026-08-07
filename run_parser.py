@@ -122,7 +122,7 @@ def selftest() -> None:
     print("selftest OK")
 
 
-def export_from_db(db: ListingDB) -> Path:
+def export_from_db(db: ListingDB, *, to_gsheets: bool = False) -> Path:
     payloads = mark_duplicates(db.all_payloads())
     for p in payloads:
         db.save_payload(p)
@@ -132,6 +132,10 @@ def export_from_db(db: ListingDB) -> Path:
         f"Excel: {path} | всего={len(payloads)} | уникальных={len(uniq)} | "
         f"stats={db.stats()}"
     )
+    if to_gsheets:
+        from parser.export_gsheets import export_gsheets
+
+        export_gsheets(uniq, skip_duplicates=False)
     return path
 
 
@@ -207,8 +211,10 @@ async def async_main(args: argparse.Namespace) -> None:
     if only_flags and not args.enrich and not args.listen:
         do_scrape = False
 
+    to_sheets = bool(getattr(args, "export_gsheets", False))
+
     if args.export_only and not do_enrich and not args.rescore:
-        export_from_db(db)
+        export_from_db(db, to_gsheets=to_sheets)
         db.close()
         return
 
@@ -217,7 +223,7 @@ async def async_main(args: argparse.Namespace) -> None:
             from parser.enrich.pipeline import rescore_db
 
             print("Rescore:", rescore_db(db))
-            export_from_db(db)
+            export_from_db(db, to_gsheets=to_sheets)
             if not do_enrich and not args.listen:
                 return
 
@@ -246,7 +252,7 @@ async def async_main(args: argparse.Namespace) -> None:
             )
             print(f"Обогащение: {result}")
 
-        export_from_db(db)
+        export_from_db(db, to_gsheets=to_sheets)
 
         if args.listen:
             if client is None:
@@ -278,6 +284,11 @@ def main() -> None:
     )
     ap.add_argument("--listen", action="store_true")
     ap.add_argument("--export-only", action="store_true")
+    ap.add_argument(
+        "--export-gsheets",
+        action="store_true",
+        help="после Excel также выгрузить в Google Sheets (нужен .env)",
+    )
     ap.add_argument("--rescore", action="store_true", help="пересчёт M/N/score без сети")
     ap.add_argument("--enrich", action="store_true", help="scrape + все enrich")
     ap.add_argument("--enrich-only", action="store_true", help="все enrich без scrape")
