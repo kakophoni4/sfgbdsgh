@@ -6,9 +6,28 @@ from typing import Any
 
 # --- regex ---
 
-RE_OOO = re.compile(
-    r"(?:ООО|OОО|Oоо)\s*[«\"“»]?([А-ЯЁA-Z0-9][^«\"”»\n,]{1,80})[»\"”«]?",
+# Только «ООО "БРЕНД"» / ООО БРЕНД — не «ООО с историей 2017»
+RE_OOO_QUOTED = re.compile(
+    r"(?:ООО|OОО)\s*[«\"“']\s*([А-ЯЁA-Z0-9][^«\"”»'\n]{1,70}?)\s*[»\"”']",
     re.I,
+)
+# ООО Бренд / ООО БК Гарант (слово с заглавной; «с историей» отсечёт валидатор)
+RE_OOO_BARE = re.compile(
+    r"(?:ООО|OОО)\s+"
+    r"((?:[А-ЯЁA-Z0-9][А-ЯЁA-Za-zа-яё0-9\-]*)"
+    r"(?:\s+[А-ЯЁA-Z0-9][А-ЯЁA-Za-zа-яё0-9\-]*){0,4})"
+)
+# старый широкий паттерн — только для детекта «есть ООО», не для имени
+RE_OOO = re.compile(r"\b(?:ООО|OОО)\b", re.I)
+# рекламный хвост вместо названия
+RE_FAKE_FIRM_NAME = re.compile(
+    r"(?i)^(?:"
+    r"с\s+историей|без\s+истори|нулевк|нулёвк|готов\w*|под\s+смен|"
+    r"инн\s+по\s+запросу|по\s+запросу|без\s+сч[её]т|с\s+сч[её]т|"
+    r"с\s+оборот|без\s+оборот|под\s+ключ|в\s+любой\s+регион|"
+    r"профи\b|экспресс|срочно|недорого|дешев|"
+    r"\d{4}\s*г|история\s+\d{4}"
+    r")"
 )
 RE_INN_LABELED = re.compile(r"ИНН\s*[:\-]?\s*(\d{10})\b", re.I)
 RE_OGRN = re.compile(r"ОГРН\s*[:\-]?\s*(\d{13})\b", re.I)
@@ -238,16 +257,54 @@ def extract_reg(text: str) -> tuple[str, int | None]:
     return "", None
 
 
+def _clean_firm_core(raw: str) -> str:
+    name = (raw or "").strip(" .,—-«»\"'“”")
+    name = re.split(r"\s*,\s*", name, maxsplit=1)[0].strip()
+    name = re.split(r"\s+[–—-]\s+", name, maxsplit=1)[0].strip()
+    # отрезать хвост «ИНН …» / «с историей…» если влез в кавычки
+    name = re.split(r"(?i)\s+ИНН\b", name, maxsplit=1)[0].strip()
+    name = re.split(r"(?i)\s+с\s+историей\b", name, maxsplit=1)[0].strip()
+    name = name.strip(" «»\"'“”")
+    return name
+
+
+def is_plausible_firm_name(name: str) -> bool:
+    """Отсекает рекламу вида «ООО с историей 2017» / «ООО Профи ИНН по запросу»."""
+    if not name or len(name) < 2:
+        return False
+    core = name
+    core = re.sub(r"(?i)^ООО\s*", "", core).strip(" «»\"'“”")
+    if len(core) < 2 or len(core) > 60:
+        return False
+    if RE_FAKE_FIRM_NAME.search(core):
+        return False
+    if RE_BAD_NAME_LINE.search(core):
+        return False
+    # сплошь цифры / год
+    if re.fullmatch(r"[\d\s./гГ]+", core):
+        return False
+    # должно быть хоть немного «буквенного» бренда
+    letters = re.findall(r"[A-Za-zА-Яа-яЁё]", core)
+    if len(letters) < 2:
+        return False
+    # «с историей…» часто без кавычек уже отфильтровано; ловим mid-string
+    if re.search(r"(?i)историей|по\s+запросу|нулевк|нулёвк", core):
+        return False
+    return True
+
+
 def extract_name(text: str) -> str:
-    m = RE_OOO.search(text)
-    if m:
-        name = m.group(1).strip(" .,—-«»\"'“”")
-        # обрезать хвост после запятой с городом
-        name = re.split(r"\s*,\s*", name, maxsplit=1)[0].strip()
-        name = name.strip(" «»\"'“”")
-        if len(name) >= 2:
-            return f"ООО «{name}»"
-    # первая содержательная строка (не приветствие / не «нужна компания»)
+    # 1) ООО в кавычках — самый надёжный вариант
+    for m in RE_OOO_QUOTED.finditer(text):
+        core = _clean_firm_core(m.group(1))
+        if is_plausible_firm_name(core):
+            return f"ООО «{core}»"
+    # 2) ООО БРЕНД заглавными (без «с историей…»)
+    for m in RE_OOO_BARE.finditer(text):
+        core = _clean_firm_core(m.group(1))
+        if is_plausible_firm_name(core):
+            return f"ООО «{core}»"
+    # 3) первая строка — только если похожа на бренд, не на объявление
     for line in text.splitlines():
         line = line.strip()
         if not line or len(line) < 2:
@@ -258,13 +315,21 @@ def extract_name(text: str) -> str:
             continue
         if re.match(r"^(для связи|пишите|стоимость|цена)\b", line, re.I):
             continue
-        # убрать эмодзи-префиксы
         clean = re.sub(r"^[\W_🟢✅✔️❇️💎🔥]+", "", line).strip()
         if not clean or clean.lower().startswith("инн"):
             continue
         if RE_BAD_NAME_LINE.search(clean):
             continue
-        return clean[:120]
+        if re.search(r"(?i)с\s+историей|инн\s+по\s+запросу|нужна\s+компа", clean):
+            continue
+        # строка целиком «ООО …» — прогоняем через валидатор
+        if re.match(r"(?i)^ООО\b", clean):
+            core = _clean_firm_core(re.sub(r"(?i)^ООО\s*", "", clean))
+            if is_plausible_firm_name(core):
+                return f"ООО «{core[:80]}»"
+            continue
+        if is_plausible_firm_name(clean[:80]):
+            return clean[:120]
     return ""
 
 
@@ -395,15 +460,18 @@ def parse_block(
     # не брать служебные боты каталога если есть нормальный контакт
     listing.seller_username = users[0] if users else (sender or "")
 
-    # валидность лота
+    # фейковое «ООО с историей…» без ИНН — не лот
+    if listing.name and not is_plausible_firm_name(listing.name):
+        listing.name = ""
+
+    # валидность: нужен ИНН/ОГРН или нормальное имя + цена/режим
+    has_id = bool(listing.inn or listing.ogrn)
+    has_name = bool(listing.name and is_plausible_firm_name(listing.name))
     looks_like = bool(
-        listing.name
-        and (
-            listing.price_rub
-            or listing.inn
-            or listing.ogrn
-            or listing.sno
-            or listing.revenues
+        has_id
+        or (
+            has_name
+            and (listing.price_rub or listing.sno or listing.revenues)
         )
     )
     if not looks_like:

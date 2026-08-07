@@ -85,47 +85,32 @@ def _flat(s: Any, limit: int = 300) -> str:
 
 
 def _display_name(p: dict[str, Any]) -> str:
+    from parser.extract import is_plausible_firm_name
+
     egrul = (p.get("enrich") or {}).get("egrul") or {}
-    name = _flat(egrul.get("name") or p.get("name") or "", 120)
-    if not name or _is_buyer_name(name):
-        inn = (p.get("inn") or "").strip()
-        if inn.isdigit():
-            return f"ООО (ИНН {inn})"
-        return "без названия"
-    # обрезки вроде «Усн» / «дата …»
-    low = name.lower()
-    if low in {"усн", "осно", "осн", "аусн"} or low.startswith("дата "):
-        inn = (p.get("inn") or "").strip()
-        if egrul.get("name"):
-            return _flat(egrul["name"], 120)
-        if inn.isdigit():
-            return f"ООО (ИНН {inn})"
-    return name
+    inn = (p.get("inn") or "").strip()
+    # приоритет: официальное имя из ЕГРЮЛ
+    for cand in (egrul.get("name"), p.get("name")):
+        name = _flat(cand or "", 120)
+        if name and not _is_buyer_name(name) and is_plausible_firm_name(name):
+            return name
+    if inn.isdigit():
+        return f"ООО (ИНН {inn})"
+    return "без названия"
 
 
 def is_sheet_worthy(p: dict[str, Any]) -> bool:
-    """В онлайн — только продажи фирм, не «добрый день нужна компания»."""
+    """В Sheets — только лоты с реальным ИНН (10 цифр). Без «ООО с историей»."""
     if p.get("is_duplicate"):
         return False
-    raw = p.get("raw_text") or ""
+    inn = (p.get("inn") or "").strip()
+    if not (inn.isdigit() and len(inn) == 10):
+        return False
     name = p.get("name") or ""
     if _is_buyer_name(name):
         return False
-    head = raw[:320]
-    if _BUYER_TEXT.search(head) and not _SALE_HINT.search(head):
-        inn = (p.get("inn") or "").strip()
-        if not (inn.isdigit() and len(inn) == 10):
-            return False
-
-    inn = (p.get("inn") or "").strip()
-    if inn.isdigit() and len(inn) == 10:
-        return True
-    egrul_name = ((p.get("enrich") or {}).get("egrul") or {}).get("name") or ""
-    if egrul_name and p.get("price_rub"):
-        return True
-    if name.startswith("ООО") and p.get("price_rub"):
-        return True
-    return False
+    # имя из парсера может быть мусором — ок, подставим ЕГРЮЛ / ИНН
+    return True
 
 
 def _short_verdict(p: dict[str, Any]) -> str:

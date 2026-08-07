@@ -208,8 +208,18 @@ def row_from_payload(p: dict[str, Any]) -> list[Any]:
         taxes = companium.get("taxes_rub")
     founder = checklist.get("founder") or companium.get("founder") or ""
 
+    from parser.extract import is_plausible_firm_name
+
+    disp_name = ""
+    for cand in (egrul.get("name"), p.get("name")):
+        if cand and is_plausible_firm_name(str(cand)):
+            disp_name = str(cand)
+            break
+    if not disp_name and inn and str(inn).isdigit():
+        disp_name = f"ООО (ИНН {inn})"
+
     return [
-        p.get("name") or egrul.get("name") or "",
+        disp_name,
         inn,
         checklist.get("C_reg_date") or p.get("reg_date_raw") or "",
         _price_cell(p.get("price_rub")),
