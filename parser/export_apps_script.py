@@ -44,9 +44,20 @@ VERDICT_COL = 14  # 1-based для Apps Script
 ZSK_COL = 13
 
 _WS = re.compile(r"\s+")
-_BUYER_NAME = re.compile(
-    r"(?i)^(добрый|здравствуйте|всем\s+привет|подскажите|нужна|нужен|нужно|"
-    r"ищу|куплю|требуется|помогите|есть\s+кто|кто\s+прода)"
+_BUYER_PREFIXES = (
+    "добрый",
+    "здравствуйте",
+    "всем привет",
+    "подскажите",
+    "нужна",
+    "нужен",
+    "нужно",
+    "ищу",
+    "куплю",
+    "требуется",
+    "помогите",
+    "есть кто",
+    "кто прода",
 )
 _BUYER_TEXT = re.compile(
     r"(?i)\b(нужна|нужен|нужно|ищу|куплю|требуется|подберите)\b|"
@@ -55,6 +66,14 @@ _BUYER_TEXT = re.compile(
 _SALE_HINT = re.compile(
     r"(?i)\b(прода[еёю]|продажа|стоимость|цена)\b|\bИНН\s*[:\-]?\s*\d{10}"
 )
+
+
+def _is_buyer_name(name: str) -> bool:
+    low = (name or "").strip().lower()
+    if not low:
+        return False
+    return any(low.startswith(p) for p in _BUYER_PREFIXES)
+
 
 
 def _flat(s: Any, limit: int = 300) -> str:
@@ -68,7 +87,7 @@ def _flat(s: Any, limit: int = 300) -> str:
 def _display_name(p: dict[str, Any]) -> str:
     egrul = (p.get("enrich") or {}).get("egrul") or {}
     name = _flat(egrul.get("name") or p.get("name") or "", 120)
-    if not name or _BUYER_NAME.search(name):
+    if not name or _is_buyer_name(name):
         inn = (p.get("inn") or "").strip()
         if inn.isdigit():
             return f"ООО (ИНН {inn})"
@@ -90,7 +109,7 @@ def is_sheet_worthy(p: dict[str, Any]) -> bool:
         return False
     raw = p.get("raw_text") or ""
     name = p.get("name") or ""
-    if _BUYER_NAME.search(name.strip()):
+    if _is_buyer_name(name):
         return False
     head = raw[:320]
     if _BUYER_TEXT.search(head) and not _SALE_HINT.search(head):
