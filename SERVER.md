@@ -123,6 +123,31 @@ python run_parser.py --enrich-fedresurs --enrich-limit 20
 python run_parser.py --export-only
 ```
 
+## КАД через Playwright
+
+Голый HTTP → часто `blocked_451`. Playwright открывает сайт как Chrome.
+
+```powershell
+cd C:\firmy
+.\.venv\Scripts\Activate.ps1
+pip install playwright
+python -m playwright install chromium
+
+$env:KAD_BROWSER = "always"
+python -c "from parser.enrich.kad import fetch_kad; print(fetch_kad('9728144340'))"
+```
+
+Если в ответе `error='pravocaptcha'` или `blocked_451*` — поиск КАД требует капчу PravoCaptcha / режет IP. Тогда колонка P остаётся **ПРОВЕРИТЬ** (вручную на kad.arbitr.ru).
+
+```powershell
+$env:KAD_BROWSER = "auto"
+python run_parser.py --enrich-kad --enrich-limit 20
+```
+
+- `KAD_BROWSER=auto` — HTTP, при 451 → Playwright  
+- `KAD_BROWSER=always` — сразу браузер  
+- `KAD_HEADLESS=0` — показать окно (иногда легче проходит)
+
 ## 7. Linux-скрипты
 
 `deploy/setup_server.sh` и systemd — запасной вариант, для Windows не нужны.

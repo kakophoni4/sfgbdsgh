@@ -332,6 +332,13 @@ def enrich_db(
             payloads = unique_only(db.all_payloads()) if unique_first else db.all_payloads()
 
         if "kad" in sources:
+            def _pick_kad(p: dict[str, Any]) -> bool:
+                if not p.get("inn"):
+                    return False
+                cl = (p.get("enrich") or {}).get("checklist") or {}
+                # повторяем, если ещё не было жёсткого ЕСТЬ/НЕТ (ПРОВЕРИТЬ после Playwright)
+                return cl.get("P_court_cases") not in ("ЕСТЬ", "НЕТ")
+
             _run_source(
                 name="КАД",
                 payloads=payloads,
@@ -339,12 +346,14 @@ def enrich_db(
                 pause=pause,
                 db=db,
                 stats=stats,
-                pick=lambda p: bool(p.get("inn"))
-                and "P_court_cases" not in ((p.get("enrich") or {}).get("checklist") or {}),
+                pick=_pick_kad,
                 apply=apply_kad,
                 ok_key="kad_ok",
                 err_key="kad_err",
-                summary=lambda u: f"P={(u.get('enrich') or {}).get('checklist', {}).get('P_court_cases')}",
+                summary=lambda u: (
+                    f"P={(u.get('enrich') or {}).get('checklist', {}).get('P_court_cases')} "
+                    f"src={((u.get('enrich') or {}).get('kad') or {}).get('source', '')[:40]}"
+                ),
             )
             payloads = unique_only(db.all_payloads()) if unique_first else db.all_payloads()
 

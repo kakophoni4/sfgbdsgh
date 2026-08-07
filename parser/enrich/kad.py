@@ -1,4 +1,7 @@
-"""Арбитражные дела (КАД) → колонка P: ЕСТЬ / НЕТ / ПРОВЕРИТЬ."""
+"""Арбитражные дела (КАД) → колонка P: ЕСТЬ / НЕТ / ПРОВЕРИТЬ.
+
+Сначала HTTP; при 451 — Playwright (если установлен).
+"""
 
 from __future__ import annotations
 
@@ -25,11 +28,7 @@ class KadReport:
         return asdict(self)
 
 
-def fetch_kad(inn: str) -> KadReport:
-    inn = (inn or "").strip()
-    if not inn.isdigit():
-        return KadReport(inn=inn, error="bad_inn")
-
+def _fetch_kad_http(inn: str) -> KadReport:
     payload = {
         "Page": 1,
         "Count": 25,
@@ -90,7 +89,6 @@ def fetch_kad(inn: str) -> KadReport:
                 continue
 
             data = r.json()
-            # разные формы ответа
             items = []
             if isinstance(data, dict):
                 items = (
@@ -137,6 +135,36 @@ def fetch_kad(inn: str) -> KadReport:
     return KadReport(inn=inn, error=last_err or "unreachable")
 
 
+def fetch_kad(inn: str) -> KadReport:
+    inn = (inn or "").strip()
+    if not inn.isdigit():
+        return KadReport(inn=inn, error="bad_inn")
+
+    from .kad_browser import browser_mode, fetch_kad_browser, playwright_available
+
+    mode = browser_mode()
+    if mode == "always":
+        return fetch_kad_browser(inn)
+    if mode == "never":
+        return _fetch_kad_http(inn)
+
+    # auto
+    http = _fetch_kad_http(inn)
+    if not http.error:
+        return http
+    if http.error == "blocked_451" and playwright_available():
+        browser = fetch_kad_browser(inn)
+        # если браузер тоже не смог — вернём его ошибку (информативнее)
+        return browser
+    if http.error == "blocked_451" and not playwright_available():
+        return KadReport(
+            inn=inn,
+            error="blocked_451_install_playwright",
+            source=http.source,
+        )
+    return http
+
+
 def checklist_from_kad(report: KadReport) -> dict[str, Any]:
     if report.error:
         return {
@@ -147,6 +175,8 @@ def checklist_from_kad(report: KadReport) -> dict[str, Any]:
     n = report.cases_found or 0
     return {
         "P_court_cases": "ЕСТЬ" if n > 0 else "НЕТ",
-        "P_note": f"дел={n}" + (f"; примеры: {', '.join(report.sample or [])}" if report.sample else ""),
+        "P_note": f"дел={n}"
+        + (f"; примеры: {', '.join(report.sample or [])}" if report.sample else ""),
         "P_link": "https://kad.arbitr.ru/",
+        "P_source": report.source,
     }
