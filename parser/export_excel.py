@@ -7,39 +7,47 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+# Без букв A–X в шапке — понятные названия для заказчика
 HEADERS = [
-    "A Название",
-    "B ИНН",
-    "C Дата рег.",
-    "D Цена",
-    "E Цена покупки (вручную)",
-    "F Регистрация (+адрес)",
-    "G ОСНО/СНО",
-    "H Рег до 2024",
-    "I Достоверность (ЕГРЮЛ)",
-    "J Первичка/1С (вручную)",
-    "K Займы, кредиторка",
-    "L Долги/ИЛ",
-    "M Не на ликвидации",
-    "N Не на исключении",
-    "O Банкротство (Федресурс)",
-    "P Судебные дела",
-    "Q Расчётные счета (вручную)",
-    "R Есть обороты (>500к)",
-    "S ЗСК (заявление продавца)",
-    "T Приостановки (вручную)",
-    "U Отчётность сдана",
-    "V Лизинги/кредиты",
-    "W Дата проверки",
-    "X Результат ИИ/скоринг",
-    "Ссылка",
+    "Название",
+    "ИНН",
+    "Дата регистрации",
+    "Цена",
+    "Цена покупки (вручную)",
+    "Адрес и директор",
+    "Налоговый режим",
+    "Регистрация до 2024",
+    "Достоверность ЕГРЮЛ",
+    "Первичка / 1С (вручную)",
+    "Займы и кредиторка",
+    "Долги / исполнительные листы",
+    "Не на ликвидации",
+    "Не на исключении",
+    "Банкротство",
+    "Судебные дела",
+    "Расчётные счета (вручную)",
+    "Обороты (>500 тыс.)",
+    "ЗСК (заявление продавца)",
+    "Приостановки (вручную)",
+    "Отчётность сдана",
+    "Лизинг / залоги",
+    "Дата проверки",
+    "Итог / скоринг",
+    "Ссылка на объявление",
     "Продавец",
-    "Score",
+    "Балл",
     "ОГРН",
     "ОКВЭД",
     "Уверенность",
-    "ЕГРЮЛ статус",
+    "Статус в ЕГРЮЛ",
     "Дубликат",
+    "Сводка (Companium)",
+    "Сотрудники",
+    "МСП",
+    "Санкции",
+    "Уставный капитал",
+    "Налоги (уплачено)",
+    "Учредитель",
     "Сырой текст",
 ]
 
@@ -58,9 +66,9 @@ VERDICT_FILL = {
 
 def _zsk_cell(claim: str) -> str:
     return {
-        "green": "🟢 зелёный (заявление)",
-        "yellow": "🟡 жёлтый (заявление)",
-        "red": "🔴 красный (заявление)",
+        "green": "зелёный (заявление продавца)",
+        "yellow": "жёлтый (заявление продавца)",
+        "red": "красный (заявление продавца)",
     }.get(claim, "")
 
 
@@ -68,11 +76,49 @@ def _price_cell(price: int | None) -> str | int:
     return price if price is not None else ""
 
 
+def _money(v: Any) -> str:
+    if v is None or v == "":
+        return ""
+    try:
+        return f"{int(v):,}".replace(",", " ") + " ₽"
+    except (TypeError, ValueError):
+        return str(v)
+
+
+def _human_flag(key: str, val: Any) -> str:
+    """Внутренние ДА/НЕТ → понятные фразы в Excel."""
+    s = str(val or "").strip()
+    if not s:
+        return ""
+    low = s.lower()
+    if key == "I_reliable":
+        if low == "да":
+            return "достоверно (записи о недостоверности нет)"
+        if low == "нет":
+            return "есть недостоверность сведений"
+        if "провер" in low:
+            return "нужно проверить"
+    if key in {"M_not_liquidating", "N_not_excluding"}:
+        if low == "да":
+            return "да"
+        if low == "нет":
+            return "нет — риск"
+    if key == "U_reports_filed":
+        if low == "да":
+            return "сдана"
+        if low == "нет":
+            return "не найдена"
+    if s == "ПРОВЕРИТЬ":
+        return "нужно проверить"
+    return s
+
+
 def row_from_payload(p: dict[str, Any]) -> list[Any]:
     scoring = p.get("scoring") or {}
     enrich = p.get("enrich") or {}
     checklist = enrich.get("checklist") or {}
     egrul = enrich.get("egrul") or {}
+    companium = enrich.get("companium") or {}
 
     j_hint = ""
     if p.get("primary_1c_claim"):
@@ -97,29 +143,54 @@ def row_from_payload(p: dict[str, Any]) -> list[Any]:
     if not inn and p.get("inn_on_request"):
         inn = "по запросу"
 
+    dossier = checklist.get("dossier") or ""
+    if not dossier and companium and not companium.get("error"):
+        # старые записи без dossier — коротко из счётчиков
+        bits = []
+        if companium.get("court_cases") is not None:
+            n = companium["court_cases"]
+            bits.append("суды: нет дел" if n == 0 else f"суды: {n}")
+        if companium.get("enforcements") is not None:
+            n = companium["enforcements"]
+            bits.append("долги: нет" if n == 0 else f"долги: {n}")
+        dossier = "; ".join(bits)
+
+    employees = checklist.get("employees")
+    if employees is None:
+        employees = companium.get("employees")
+    msp = checklist.get("msp") or companium.get("msp") or ""
+    sanctions = checklist.get("sanctions") or companium.get("sanctions") or ""
+    capital = checklist.get("capital_rub")
+    if capital is None:
+        capital = companium.get("capital_rub")
+    taxes = checklist.get("taxes_rub")
+    if taxes is None:
+        taxes = companium.get("taxes_rub")
+    founder = checklist.get("founder") or companium.get("founder") or ""
+
     return [
         p.get("name") or egrul.get("name") or "",
         inn,
         checklist.get("C_reg_date") or p.get("reg_date_raw") or "",
         _price_cell(p.get("price_rub")),
-        "",  # E manual
-        f_cell,  # F from EGRUL (+ manual later)
+        "",  # цена покупки вручную
+        f_cell,
         p.get("sno") or "",
         scoring.get("reg_before_2024") or "",
-        checklist.get("I_reliable") or "",
+        _human_flag("I_reliable", checklist.get("I_reliable")),
         j_hint,
         checklist.get("K_loans_payables") or "",
         checklist.get("L_debts_il")
         or ("продавец: без долгов" if p.get("no_debts_claim") else ""),
-        checklist.get("M_not_liquidating") or "",
-        checklist.get("N_not_excluding") or "",
+        _human_flag("M_not_liquidating", checklist.get("M_not_liquidating")),
+        _human_flag("N_not_excluding", checklist.get("N_not_excluding")),
         checklist.get("O_clean") or "",
         checklist.get("P_court_cases") or "",
         q_hint,
         checklist.get("R_turnover") or scoring.get("has_turnover_flag") or "",
         _zsk_cell(p.get("zsk_claim") or ""),
         t_hint,
-        checklist.get("U_reports_filed") or "",
+        _human_flag("U_reports_filed", checklist.get("U_reports_filed")),
         checklist.get("V_leases") or "",
         enrich.get("checked_at") or p.get("msg_date") or "",
         scoring.get("summary") or "",
@@ -130,7 +201,14 @@ def row_from_payload(p: dict[str, Any]) -> list[Any]:
         p.get("okved") or egrul.get("okved") or "",
         scoring.get("confidence") or "",
         checklist.get("status") or egrul.get("status") or "",
-        "ДА" if p.get("is_duplicate") else "",
+        "да" if p.get("is_duplicate") else "",
+        dossier,
+        employees if employees is not None else "",
+        msp,
+        sanctions,
+        _money(capital),
+        _money(taxes),
+        founder,
         (p.get("raw_text") or "")[:2000],
     ]
 
@@ -154,6 +232,7 @@ def export_xlsx(
         cell.font = header_font
         cell.alignment = Alignment(wrap_text=True, vertical="top")
 
+    # индексы для подсветки (1-based): ЗСК=19, Итог=24
     for r, p in enumerate(payloads, 2):
         values = row_from_payload(p)
         for c, val in enumerate(values, 1):
@@ -173,12 +252,17 @@ def export_xlsx(
         3: 14,
         4: 12,
         6: 36,
-        7: 12,
-        19: 22,
-        24: 50,
+        7: 14,
+        12: 22,
+        15: 18,
+        16: 14,
+        19: 24,
+        24: 48,
         25: 28,
         26: 16,
-        33: 50,
+        33: 56,
+        39: 28,
+        40: 40,
     }
     for i in range(1, len(HEADERS) + 1):
         ws.column_dimensions[get_column_letter(i)].width = widths.get(i, 14)

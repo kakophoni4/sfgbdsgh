@@ -34,7 +34,8 @@ def _is_gap(val: Any) -> bool:
 
 def _checklist_fill_gaps(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
     """Дописать только пустые/ПРОВЕРИТЬ поля (запасные источники не затирают удачные)."""
-    out = dict(old)
+    # старые ДА/НЕТ → актуальные подписи, чтобы не смешивать с «нет банкротства»
+    out = _remap_checklist_labels(dict(old))
     groups = {
         "P_court_cases": ("P_note", "P_link"),
         "L_debts_il": ("L_note", "L_link"),
@@ -53,17 +54,47 @@ def _checklist_fill_gaps(old: dict[str, Any], new: dict[str, Any]) -> dict[str, 
             and str(nxt).startswith("есть")
             and not str(cur or "").startswith("есть")
         )
+        # синонимы O: ДА ≡ нет банкротства — не считаем «уже заполнено» блокером новой фразы
+        if main == "O_clean" and cur in {"ДА", "нет банкротства"} and nxt == "нет банкротства":
+            out[main] = nxt
+            for e in extras:
+                if e in new:
+                    out[e] = new[e]
+            continue
         if _is_gap(cur) or o_upgrade:
             out[main] = nxt
             for e in extras:
                 if e in new:
                     out[e] = new[e]
+    _EXTRA_KEEP = {
+        "dossier",
+        "employees",
+        "msp",
+        "sanctions",
+        "capital_rub",
+        "taxes_rub",
+        "insurance_rub",
+        "revenue_note",
+        "licenses",
+        "checks",
+        "founder",
+        "bankruptcy_reg",
+    }
     for k, v in new.items():
-        if k.endswith("_url") or k.endswith("_error") or k.startswith("checko") or k.startswith(
-            "saby"
-        ) or k.startswith("companium"):
+        if (
+            k.endswith("_url")
+            or k.endswith("_error")
+            or k.startswith("checko")
+            or k.startswith("saby")
+            or k.startswith("companium")
+            or k in _EXTRA_KEEP
+        ):
+            if k in _EXTRA_KEEP and not _is_gap(out.get(k)) and _is_gap(v):
+                continue
+            if k in _EXTRA_KEEP and v in (None, ""):
+                continue
             out[k] = v
-    return out
+    return _remap_checklist_labels(out)
 
 
 def _now() -> str:
@@ -553,9 +584,11 @@ def enrich_db(
                 ok_key="companium_ok",
                 err_key="companium_err",
                 summary=lambda u: (
-                    f"P={(u.get('enrich') or {}).get('checklist', {}).get('P_court_cases')} "
-                    f"L={(u.get('enrich') or {}).get('checklist', {}).get('L_debts_il')} "
-                    f"I={(u.get('enrich') or {}).get('checklist', {}).get('I_reliable')}"
+                    ((u.get("enrich") or {}).get("checklist") or {}).get("dossier")
+                    or (
+                        f"суды={(u.get('enrich') or {}).get('checklist', {}).get('P_court_cases')} "
+                        f"долги={(u.get('enrich') or {}).get('checklist', {}).get('L_debts_il')}"
+                    )
                 ),
             )
             payloads = unique_only(db.all_payloads()) if unique_first else db.all_payloads()

@@ -1,6 +1,47 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import quote, urlparse, urlunparse
+
+
+def _proxy_url() -> str:
+    try:
+        from config import ENRICH_PROXY
+
+        return (ENRICH_PROXY or "").strip()
+    except Exception:
+        import os
+
+        return (
+            os.getenv("ENRICH_PROXY", "").strip()
+            or os.getenv("HTTPS_PROXY", "").strip()
+            or os.getenv("HTTP_PROXY", "").strip()
+        )
+
+
+def _normalize_proxy(url: str) -> str:
+    """user:pass@host:port или полный URL → http://... с urlencoded user/pass."""
+    u = (url or "").strip()
+    if not u:
+        return ""
+    if "://" not in u:
+        u = "http://" + u
+    p = urlparse(u)
+    if not p.hostname:
+        return u
+    user = quote(p.username or "", safe="")
+    pwd = quote(p.password or "", safe="")
+    auth = f"{user}:{pwd}@" if (user or pwd) else ""
+    host = p.hostname
+    port = f":{p.port}" if p.port else ""
+    return urlunparse((p.scheme or "http", f"{auth}{host}{port}", "", "", "", ""))
+
+
+def proxy_dict() -> dict[str, str] | None:
+    raw = _normalize_proxy(_proxy_url())
+    if not raw:
+        return None
+    return {"http": raw, "https": raw}
 
 
 def make_session(base_headers: dict[str, str] | None = None):
@@ -17,6 +58,8 @@ def make_session(base_headers: dict[str, str] | None = None):
     if base_headers:
         headers.update(base_headers)
 
+    proxies = proxy_dict()
+
     try:
         from curl_cffi import requests as crequests  # type: ignore
 
@@ -24,6 +67,8 @@ def make_session(base_headers: dict[str, str] | None = None):
         s.headers.update(headers)
         s._engine = "curl_cffi"  # type: ignore[attr-defined]
         s._impersonate = "chrome124"  # type: ignore[attr-defined]
+        if proxies:
+            s.proxies = proxies  # type: ignore[attr-defined]
         return s
     except Exception:
         pass
@@ -35,9 +80,14 @@ def make_session(base_headers: dict[str, str] | None = None):
             _engine = "httpx"
 
             def __init__(self) -> None:
-                self._c = httpx.Client(
-                    headers=headers, timeout=45, follow_redirects=True
-                )
+                kwargs: dict[str, Any] = {
+                    "headers": headers,
+                    "timeout": 45,
+                    "follow_redirects": True,
+                }
+                if proxies:
+                    kwargs["proxy"] = proxies.get("https") or proxies.get("http")
+                self._c = httpx.Client(**kwargs)
 
             def get(self, url: str, **kwargs: Any):
                 return self._c.get(url, **kwargs)
@@ -52,6 +102,8 @@ def make_session(base_headers: dict[str, str] | None = None):
         s = requests.Session()
         s.headers.update(headers)
         s._engine = "requests"  # type: ignore[attr-defined]
+        if proxies:
+            s.proxies.update(proxies)
         return s
 
 
@@ -67,12 +119,16 @@ def http_get(
     if params:
         kwargs["params"] = params
     engine = getattr(session, "_engine", "")
+    proxies = proxy_dict()
     if engine == "curl_cffi":
         kwargs["impersonate"] = getattr(session, "_impersonate", "chrome124")
         kwargs["allow_redirects"] = allow_redirects
+        if proxies and not getattr(session, "proxies", None):
+            kwargs["proxies"] = proxies
     elif engine == "httpx":
-        # httpx client already configured; pass follow_redirects per-request if possible
         kwargs["follow_redirects"] = allow_redirects
     else:
         kwargs["allow_redirects"] = allow_redirects
+        if proxies:
+            kwargs.setdefault("proxies", proxies)
     return session.get(url, **kwargs)
