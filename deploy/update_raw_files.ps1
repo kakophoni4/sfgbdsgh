@@ -17,10 +17,12 @@ $files = @(
     "parser/enrich/buh.py",
     "parser/enrich/kad.py",
     "parser/enrich/kad_browser.py",
+    "parser/enrich/companium.py",
     "parser/enrich/fssp.py",
     "requirements.txt",
     "parser/enrich/fedresurs.py",
     "parser/enrich/unreliable.py",
+    "config.py",
     "parser/enrich/http_util.py",
     "deploy/update_from_github.ps1"
 )

@@ -123,6 +123,19 @@ python run_parser.py --enrich-fedresurs --enrich-limit 20
 python run_parser.py --export-only
 ```
 
+## Companium (P / L / I без КАД)
+
+Обход заблокированного КАД/ФССП: карточка `https://companium.ru/id/{ОГРН}`.
+
+```powershell
+python -c "from parser.enrich.companium import fetch_companium; print(fetch_companium(ogrn='1057747184648'))"
+python run_parser.py --enrich-companium --enrich-limit 40
+# или всё ядро:
+python run_parser.py --enrich-core --enrich-limit 85
+```
+
+Нужен ОГРН (после ЕГРЮЛ). При капче модуль сам пробует Playwright + клик по checkbox.
+
 ## КАД через Playwright
 
 Голый HTTP → часто `blocked_451`. Playwright открывает сайт как Chrome.

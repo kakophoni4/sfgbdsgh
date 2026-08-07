@@ -1,0 +1,358 @@
+"""
+Companium.ru → колонки P (суды), L (ФССП), I (недостоверки), доп. к V.
+
+Карточка: https://companium.ru/id/{ogrn}
+Нужен ОГРН (из ЕГРЮЛ). При капче — Playwright + клик по checkbox.
+
+Сайт постепенно сворачивают в пользу checko.ru — пока страницы отдают данные, используем.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import asdict, dataclass, field
+from typing import Any
+
+from .http_util import http_get, make_session
+
+BASE = "https://companium.ru"
+
+
+@dataclass
+class CompaniumReport:
+    inn: str = ""
+    ogrn: str = ""
+    url: str = ""
+    court_cases: int | None = None
+    enforcements: int | None = None
+    unreliable: bool | None = None
+    fedresurs_msgs: int | None = None
+    name: str = ""
+    error: str = ""
+    source: str = "http"
+    extras: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def _strip_html(html: str) -> str:
+    t = re.sub(r"<script[\s\S]*?</script>", " ", html, flags=re.I)
+    t = re.sub(r"<style[\s\S]*?</style>", " ", t, flags=re.I)
+    t = re.sub(r"<[^>]+>", " ", t)
+    return re.sub(r"\s+", " ", t)
+
+
+def _has_captcha(html: str) -> bool:
+    low = html.lower()
+    return any(
+        x in low
+        for x in (
+            "smartcaptcha",
+            "checkboxcaptcha",
+            "captcha",
+            "я не робот",
+            "подтвердите, что вы не робот",
+        )
+    )
+
+
+def _parse_main(html: str, report: CompaniumReport) -> None:
+    low = html.lower()
+    if "нет записи о недостоверности" in low:
+        report.unreliable = False
+    elif "запись о недостоверности" in low or "сведения недостоверны" in low:
+        report.unreliable = True
+
+    m = re.search(
+        r"Арбитражные дела\s*<span class=\"count\">(\d+)</span>",
+        html,
+    )
+    if m:
+        report.court_cases = int(m.group(1))
+    m = re.search(
+        r"Исполнительные про[^<]*<span class=\"count\">(\d+)</span>",
+        html,
+        re.I,
+    )
+    if m:
+        report.enforcements = int(m.group(1))
+
+    m = re.search(
+        r"были рассмотрены\s*<a[^>]*>\s*([\d\s]+)\s*арбитражн",
+        low,
+    )
+    if m and report.court_cases is None:
+        report.court_cases = int(re.sub(r"\s+", "", m.group(1)))
+
+    m = re.search(
+        r"открыто\s*<a[^>]*>\s*([\d\s]+)\s*исполнительн",
+        low,
+    )
+    if m and report.enforcements is None:
+        report.enforcements = int(re.sub(r"\s+", "", m.group(1)))
+
+    title = re.search(r"<title>([^<]+)", html)
+    if title:
+        report.name = title.group(1).split("–")[0].strip()
+
+
+def _parse_legal(html: str, report: CompaniumReport) -> None:
+    text = _strip_html(html).lower()
+    if "нет сведений о судебных делах" in text or "нет сведений о судебн" in text:
+        report.court_cases = 0
+        return
+    m = re.search(r"рассмотрены\s+([\d\s]+)\s+арбитражн", text)
+    if m:
+        report.court_cases = int(re.sub(r"\s+", "", m.group(1)))
+        return
+    m = re.search(r"([\d\s]{1,12})\s+арбитражн\w*\s+дел", text)
+    if m:
+        report.court_cases = int(re.sub(r"\s+", "", m.group(1)))
+
+
+def _parse_enf(html: str, report: CompaniumReport) -> None:
+    text = _strip_html(html).lower()
+    if "не найдено ни одного" in text and "исполнительн" in text:
+        report.enforcements = 0
+        return
+    m = re.search(r"открыто\s+([\d\s]+)\s+исполнительн", text)
+    if m:
+        report.enforcements = int(re.sub(r"\s+", "", m.group(1)))
+        return
+    m = re.search(r"([\d\s]{1,12})\s+исполнительн\w*\s+производств", text)
+    if m:
+        report.enforcements = int(re.sub(r"\s+", "", m.group(1)))
+
+
+def _parse_fed(html: str, report: CompaniumReport) -> None:
+    text = _strip_html(html).lower()
+    if "не опубликовала и не является участником ни одно" in text:
+        report.fedresurs_msgs = 0
+        return
+    if "ни одного сообщения" in text or "сообщений не найдено" in text:
+        report.fedresurs_msgs = 0
+        return
+    m = re.search(r"([\d\s]{1,10})\s+сообщен", text)
+    if m:
+        report.fedresurs_msgs = int(re.sub(r"\s+", "", m.group(1)))
+
+
+def _fetch_http(ogrn: str) -> tuple[dict[str, str], str]:
+    """Returns {page_name: html} and error."""
+    session = make_session(
+        {
+            "Accept": "text/html,application/xhtml+xml",
+            "Referer": f"{BASE}/",
+        }
+    )
+    pages: dict[str, str] = {}
+    main_url = f"{BASE}/id/{ogrn}"
+    r = http_get(session, main_url, timeout=35)
+    code = getattr(r, "status_code", 0)
+    html = r.text if hasattr(r, "text") else ""
+    if code == 404:
+        return {}, "not_found"
+    if code >= 400:
+        return {}, f"http_{code}"
+    if _has_captcha(html) and len(html) < 8000:
+        return {"main": html}, "captcha"
+    pages["main"] = html or ""
+    for tab in ("legal-cases", "enforcements", "fedresurs"):
+        try:
+            rr = http_get(session, f"{BASE}/id/{ogrn}/{tab}", timeout=35)
+            if getattr(rr, "status_code", 0) == 200:
+                pages[tab] = rr.text or ""
+        except Exception as e:  # noqa: BLE001
+            pages[tab] = ""
+            pages[f"{tab}_err"] = str(e)
+    return pages, ""
+
+
+def _fetch_playwright(ogrn: str) -> tuple[dict[str, str], str]:
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        return {}, "playwright_not_installed"
+
+    pages: dict[str, str] = {}
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+            context = browser.new_context(locale="ru-RU")
+            page = context.new_page()
+            url = f"{BASE}/id/{ogrn}"
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(1500)
+
+            # Яндекс SmartCaptcha / checkbox
+            for _ in range(3):
+                html = page.content()
+                if not _has_captcha(html):
+                    break
+                clicked = False
+                for frame in page.frames:
+                    try:
+                        for sel in (
+                            ".CheckboxCaptcha-Button",
+                            "#js-button",
+                            "input[type=checkbox]",
+                            "[role=checkbox]",
+                        ):
+                            loc = frame.locator(sel)
+                            if loc.count():
+                                loc.first.click(timeout=2500)
+                                clicked = True
+                                page.wait_for_timeout(2500)
+                                break
+                    except Exception:
+                        continue
+                    if clicked:
+                        break
+                if not clicked:
+                    for sel in (
+                        ".CheckboxCaptcha-Button",
+                        "#js-button",
+                        "text=Я не робот",
+                    ):
+                        try:
+                            if page.locator(sel).count():
+                                page.locator(sel).first.click(timeout=2500)
+                                clicked = True
+                                page.wait_for_timeout(2500)
+                                break
+                        except Exception:
+                            continue
+                if not clicked:
+                    break
+
+            pages["main"] = page.content()
+            if _has_captcha(pages["main"]) and "недостоверн" not in pages["main"].lower():
+                browser.close()
+                return pages, "captcha"
+
+            for tab in ("legal-cases", "enforcements", "fedresurs"):
+                page.goto(
+                    f"{BASE}/id/{ogrn}/{tab}",
+                    wait_until="domcontentloaded",
+                    timeout=60000,
+                )
+                page.wait_for_timeout(1200)
+                pages[tab] = page.content()
+            browser.close()
+        return pages, ""
+    except Exception as e:  # noqa: BLE001
+        msg = str(e)
+        if "Executable doesn't exist" in msg:
+            return {}, "playwright_browser_missing"
+        return {}, f"browser_{msg}"
+
+
+def fetch_companium(*, ogrn: str = "", inn: str = "") -> CompaniumReport:
+    ogrn = (ogrn or "").strip()
+    inn = (inn or "").strip()
+    if not ogrn.isdigit() or len(ogrn) not in (13, 15):
+        return CompaniumReport(inn=inn, ogrn=ogrn, error="bad_ogrn")
+
+    report = CompaniumReport(
+        inn=inn,
+        ogrn=ogrn,
+        url=f"{BASE}/id/{ogrn}",
+    )
+
+    pages, err = _fetch_http(ogrn)
+    report.source = "http"
+    if err == "captcha" or (err == "" and not pages.get("main")):
+        pages, err = _fetch_playwright(ogrn)
+        report.source = "playwright"
+
+    if err and not pages.get("main"):
+        report.error = err
+        return report
+    if err == "captcha":
+        report.error = "captcha"
+        return report
+
+    main = pages.get("main") or ""
+    if "не найдена" in main.lower() and "404" in main:
+        report.error = "not_found"
+        return report
+
+    _parse_main(main, report)
+    if "legal-cases" in pages:
+        _parse_legal(pages["legal-cases"], report)
+    if "enforcements" in pages:
+        _parse_enf(pages["enforcements"], report)
+    if "fedresurs" in pages:
+        _parse_fed(pages["fedresurs"], report)
+
+    if (
+        report.court_cases is None
+        and report.enforcements is None
+        and report.unreliable is None
+    ):
+        report.error = report.error or "parse_empty"
+    return report
+
+
+def checklist_from_companium(report: CompaniumReport) -> dict[str, Any]:
+    link = report.url or f"{BASE}/id/{report.ogrn}"
+    out: dict[str, Any] = {
+        "P_link": f"{link}/legal-cases",
+        "L_link": f"{link}/enforcements",
+        "I_note": "",
+        "companium_url": link,
+    }
+
+    if report.error and report.court_cases is None and report.enforcements is None:
+        out.update(
+            {
+                "P_court_cases": "ПРОВЕРИТЬ",
+                "P_note": f"Companium: {report.error}",
+                "L_debts_il": "ПРОВЕРИТЬ",
+                "L_note": f"Companium: {report.error}",
+            }
+        )
+        if report.unreliable is None:
+            out["I_reliable"] = "ПРОВЕРИТЬ"
+            out["I_note"] = f"Companium: {report.error}"
+        return out
+
+    if report.court_cases is None:
+        out["P_court_cases"] = "ПРОВЕРИТЬ"
+        out["P_note"] = "Companium: число дел не разобрано"
+    else:
+        n = report.court_cases
+        out["P_court_cases"] = "есть дела" if n > 0 else "нет дел"
+        out["P_note"] = f"Companium: дел={n}"
+
+    if report.enforcements is None:
+        out["L_debts_il"] = "ПРОВЕРИТЬ"
+        out["L_note"] = "Companium: ФССП не разобрано"
+    else:
+        n = report.enforcements
+        out["L_debts_il"] = "есть долги/ИЛ" if n > 0 else "нет долгов/ИЛ"
+        out["L_note"] = f"Companium: производств={n}"
+
+    if report.unreliable is True:
+        out["I_reliable"] = "НЕТ"
+        out["I_note"] = "Companium: есть недостоверность сведений"
+    elif report.unreliable is False:
+        out["I_reliable"] = "ДА"
+        out["I_note"] = "Companium: нет записи о недостоверности"
+    else:
+        out["I_reliable"] = "ПРОВЕРИТЬ"
+        out["I_note"] = "Companium: недостоверность не определена"
+
+    if report.fedresurs_msgs is not None:
+        if report.fedresurs_msgs == 0:
+            out["V_leases"] = "нет лизинга/залогов"
+            out["V_note"] = "Companium/Федресурс: сообщений нет"
+        else:
+            out["V_leases"] = "ПРОВЕРИТЬ"
+            out["V_note"] = f"Companium/Федресурс: сообщений≈{report.fedresurs_msgs}"
+
+    return out

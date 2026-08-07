@@ -73,6 +73,23 @@ def selftest() -> None:
         FedresursReport(inn="1", status="Действующее", is_bankrupt=False, lease_hits=0)
     )
     assert cl_ok["O_clean"] == "нет банкротства"
+
+    from parser.enrich.companium import CompaniumReport, checklist_from_companium
+
+    cl_c = checklist_from_companium(
+        CompaniumReport(
+            ogrn="1",
+            court_cases=0,
+            enforcements=0,
+            unreliable=False,
+            fedresurs_msgs=0,
+        )
+    )
+    assert cl_c["P_court_cases"] == "нет дел"
+    assert cl_c["L_debts_il"] == "нет долгов/ИЛ"
+    assert cl_c["I_reliable"] == "ДА"
+    print("companium checklist OK")
+
     cl_i = checklist_from_unreliable(
         check_unreliable_from_egrul(
             {"inn": "1", "address": "г. Москва, сведения недостоверны", "error": ""}
@@ -100,13 +117,15 @@ def export_from_db(db: ListingDB) -> Path:
 
 def resolve_sources(args: argparse.Namespace) -> list[str]:
     if getattr(args, "enrich_core", False):
-        return ["egrul", "buh", "fedresurs", "unreliable"]
+        return ["egrul", "buh", "companium", "fedresurs", "unreliable"]
 
     explicit = []
     if args.enrich_egrul:
         explicit.append("egrul")
     if args.enrich_buh:
         explicit.append("buh")
+    if args.enrich_companium:
+        explicit.append("companium")
     if args.enrich_kad:
         explicit.append("kad")
     if args.enrich_fssp:
@@ -121,8 +140,8 @@ def resolve_sources(args: argparse.Namespace) -> list[str]:
     if args.enrich or args.enrich_only:
         if explicit:
             return explicit
-        # КАД/ФССП с сервера обычно ПРОВЕРИТЬ — в полный прогон не тащим по умолчанию
-        return ["egrul", "buh", "fedresurs", "unreliable"]
+        # ядро: без КАД/ФССП (их закрывает Companium)
+        return ["egrul", "buh", "companium", "fedresurs", "unreliable"]
     return []
 
 
@@ -138,6 +157,7 @@ async def async_main(args: argparse.Namespace) -> None:
         or args.enrich_fssp
         or args.enrich_fedresurs
         or args.enrich_unreliable
+        or args.enrich_companium
         or getattr(args, "enrich_core", False)
     )
     do_scrape = True
@@ -219,9 +239,14 @@ def main() -> None:
         help="недостоверки ЕГРЮЛ → I (без сети, по карточке)",
     )
     ap.add_argument(
+        "--enrich-companium",
+        action="store_true",
+        help="Companium.ru → P/L/I (по ОГРН, обход КАД/ФССП)",
+    )
+    ap.add_argument(
         "--enrich-core",
         action="store_true",
-        help="рабочее ядро: ЕГРЮЛ+БФО+Федресурс+I (без КАД/ФССП)",
+        help="ядро: ЕГРЮЛ+БФО+Companium+Федресурс+I",
     )
     ap.add_argument("--enrich-limit", type=int, default=ENRICH_LIMIT)
     ap.add_argument("--enrich-pause", type=float, default=None)

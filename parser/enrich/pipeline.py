@@ -11,6 +11,7 @@ from parser.db import ListingDB
 from parser.score import score_payload
 
 from .buh import checklist_from_buh, fetch_buh
+from .companium import checklist_from_companium, fetch_companium
 from .egrul import lookup_company, status_flags
 from .fedresurs import (
     checklist_from_fedresurs,
@@ -167,6 +168,27 @@ def apply_fssp(payload: dict[str, Any], pause: float = 1.0) -> dict[str, Any]:
     return _merge_enrich(p, fssp=report.to_dict(), checklist=checklist_from_fssp(report))
 
 
+def apply_companium(payload: dict[str, Any], pause: float = 1.0) -> dict[str, Any]:
+    """P/L/I (+V soft) через companium.ru по ОГРН."""
+    p = dict(payload)
+    ogrn = (p.get("ogrn") or "").strip()
+    if not ogrn:
+        ogrn = str(((p.get("enrich") or {}).get("egrul") or {}).get("ogrn") or "").strip()
+        if ogrn:
+            p["ogrn"] = ogrn
+    inn = (p.get("inn") or "").strip()
+    if not ogrn:
+        return _merge_enrich(p, companium={"error": "no_ogrn"})
+
+    report = fetch_companium(ogrn=ogrn, inn=inn)
+    _sleep(pause)
+    return _merge_enrich(
+        p,
+        companium=report.to_dict(),
+        checklist=checklist_from_companium(report),
+    )
+
+
 def apply_fedresurs(payload: dict[str, Any], pause: float = 1.0) -> dict[str, Any]:
     """O (банкрот/дисквал) + V (лизинг) через Федресурс + мягкий дисквал ФНС."""
     p = dict(payload)
@@ -268,10 +290,18 @@ def _run_source(
             src_block = enrich_u.get("fssp") or {}
         elif apply is apply_fedresurs:
             src_block = enrich_u.get("fedresurs") or {}
+        elif apply is apply_companium:
+            src_block = enrich_u.get("companium") or {}
         else:
             src_block = enrich_u.get("unreliable") or {}
 
-        soft_ok = apply in (apply_kad, apply_fssp, apply_fedresurs, apply_unreliable)
+        soft_ok = apply in (
+            apply_kad,
+            apply_fssp,
+            apply_fedresurs,
+            apply_unreliable,
+            apply_companium,
+        )
         if src_block.get("error") and not soft_ok:
             stats[err_key] += 1
             print(f"ERR {src_block.get('error')}")
@@ -301,7 +331,7 @@ def enrich_db(
     if pause is None:
         pause = ENRICH_PAUSE
 
-    sources = sources or ["egrul", "buh", "kad", "fssp", "fedresurs", "unreliable"]
+    sources = sources or ["egrul", "buh", "companium", "fedresurs", "unreliable"]
     payloads = unique_only(db.all_payloads()) if unique_first else db.all_payloads()
 
     stats = {
@@ -313,6 +343,8 @@ def enrich_db(
         "kad_err": 0,
         "fssp_ok": 0,
         "fssp_err": 0,
+        "companium_ok": 0,
+        "companium_err": 0,
         "fedresurs_ok": 0,
         "fedresurs_err": 0,
         "unreliable_ok": 0,
@@ -369,6 +401,47 @@ def enrich_db(
                 summary=lambda u: (
                     f"R={(u.get('enrich') or {}).get('checklist', {}).get('R_turnover')} "
                     f"U={(u.get('enrich') or {}).get('checklist', {}).get('U_reports_filed')}"
+                ),
+            )
+            payloads = unique_only(db.all_payloads()) if unique_first else db.all_payloads()
+
+        if "companium" in sources:
+            def _pick_companium(p: dict[str, Any]) -> bool:
+                ogrn = (p.get("ogrn") or "").strip() or str(
+                    ((p.get("enrich") or {}).get("egrul") or {}).get("ogrn") or ""
+                )
+                if not ogrn:
+                    return False
+                cl = (p.get("enrich") or {}).get("checklist") or {}
+                # пока P/L не стали осмысленными (или ещё ПРОВЕРИТЬ от КАД/ФССП)
+                p_ok = cl.get("P_court_cases") in ("есть дела", "нет дел", "ЕСТЬ", "НЕТ")
+                l_ok = cl.get("L_debts_il") in (
+                    "нет долгов/ИЛ",
+                    "есть долги/ИЛ",
+                    "ДА",
+                    "НЕТ",
+                )
+                # если уже от companium — не долбим
+                src = ((p.get("enrich") or {}).get("companium") or {})
+                if src.get("ogrn") and not src.get("error") and p_ok and l_ok:
+                    return False
+                return not (p_ok and l_ok)
+
+            _run_source(
+                name="Companium",
+                payloads=payloads,
+                limit=limit,
+                pause=pause,
+                db=db,
+                stats=stats,
+                pick=_pick_companium,
+                apply=apply_companium,
+                ok_key="companium_ok",
+                err_key="companium_err",
+                summary=lambda u: (
+                    f"P={(u.get('enrich') or {}).get('checklist', {}).get('P_court_cases')} "
+                    f"L={(u.get('enrich') or {}).get('checklist', {}).get('L_debts_il')} "
+                    f"I={(u.get('enrich') or {}).get('checklist', {}).get('I_reliable')}"
                 ),
             )
             payloads = unique_only(db.all_payloads()) if unique_first else db.all_payloads()

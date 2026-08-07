@@ -78,6 +78,18 @@ def main() -> None:
             f"source={buh.source}"
         )
 
+    print("\n=== Companium (Маркет 7) ===")
+    from parser.enrich.companium import fetch_companium
+
+    cmp = fetch_companium(ogrn="1057747184648", inn="7709613803")
+    if cmp.error:
+        print(f"  ERR {cmp.error}")
+    else:
+        print(
+            f"  OK P={cmp.court_cases} L={cmp.enforcements} "
+            f"I_unrel={cmp.unreliable} src={cmp.source}"
+        )
+
     print("\n=== Федресурс lookup (Сбер) ===")
     from parser.enrich.fedresurs import fetch_fedresurs
 
