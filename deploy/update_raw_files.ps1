@@ -41,7 +41,8 @@ $files = @(
     "deploy/fresh_run.ps1",
     "tools/rotate_proxy_session.py",
     "tools/probe_v_sources.py",
-    "tools/audit_proverit.py"
+    "tools/audit_proverit.py",
+    "tools/cleanup_bad_egrul.py"
 )
 
 if (-not (Test-Path $Root)) { throw "Missing $Root" }
