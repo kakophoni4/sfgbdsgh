@@ -1,0 +1,18 @@
+[Unit]
+Description=Firm sale parser (Telegram backfill + enrich)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/firmy
+Environment=PYTHONUNBUFFERED=1
+# Паузы можно переопределить здесь
+Environment=ENRICH_PAUSE=10
+Environment=ENRICH_JITTER=8
+ExecStart=/opt/firmy/.venv/bin/python /opt/firmy/run_parser.py --enrich --limit 300 --enrich-limit 40
+User=www-data
+Group=www-data
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+.env
+*.session
+*.session-journal
+__pycache__/
+*.pyc
+.venv/
+venv/
+data/
+chat_samples.json
+firmy_server_*.zip
+*.zip
+.idea/
+.vscode/
