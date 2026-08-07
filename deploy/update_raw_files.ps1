@@ -15,6 +15,11 @@ $files = @(
     "parser/score.py",
     "parser/export_excel.py",
     "parser/export_gsheets.py",
+    "parser/export_apps_script.py",
+    "deploy/apps_script_sheets.js",
+    "deploy/setup_apps_script.ps1",
+
+
     "parser/scrape.py",
     "parser/dedup.py",
     "parser/db.py",

@@ -26,11 +26,14 @@ HISTORY_LIMIT = int(os.getenv("HISTORY_LIMIT", "400"))
 # По умолчанию для fresh-прогонов можно задать в .env: SINCE_DAYS=30
 SINCE_DAYS = int(os.getenv("SINCE_DAYS", "0")) or None
 
-# Google Sheets (опционально)
+# Google Sheets (опционально) — service account (нужен Google Cloud)
 GOOGLE_SHEETS_ID = os.getenv("GOOGLE_SHEETS_ID", "").strip()
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv(
     "GOOGLE_SERVICE_ACCOUNT_JSON", str(ROOT / "secrets" / "gsheets.json")
 ).strip()
+# Google Sheets через Apps Script (без Cloud / карты) — предпочтительно
+GOOGLE_APPS_SCRIPT_URL = os.getenv("GOOGLE_APPS_SCRIPT_URL", "").strip()
+GOOGLE_APPS_SCRIPT_TOKEN = os.getenv("GOOGLE_APPS_SCRIPT_TOKEN", "").strip()
 
 # Паузы обогащения: итого ~ ENRICH_PAUSE .. ENRICH_PAUSE+ENRICH_JITTER сек
 # При капче ЕГРЮЛ/БФО подними, например ENRICH_PAUSE=10 ENRICH_JITTER=5

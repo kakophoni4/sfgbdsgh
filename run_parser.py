@@ -122,7 +122,12 @@ def selftest() -> None:
     print("selftest OK")
 
 
-def export_from_db(db: ListingDB, *, to_gsheets: bool = False) -> Path:
+def export_from_db(
+    db: ListingDB,
+    *,
+    to_gsheets: bool = False,
+    to_apps_script: bool = False,
+) -> Path:
     payloads = mark_duplicates(db.all_payloads())
     for p in payloads:
         db.save_payload(p)
@@ -132,7 +137,11 @@ def export_from_db(db: ListingDB, *, to_gsheets: bool = False) -> Path:
         f"Excel: {path} | всего={len(payloads)} | уникальных={len(uniq)} | "
         f"stats={db.stats()}"
     )
-    if to_gsheets:
+    if to_apps_script:
+        from parser.export_apps_script import export_apps_script
+
+        export_apps_script(uniq, skip_duplicates=False)
+    elif to_gsheets:
         from parser.export_gsheets import export_gsheets
 
         export_gsheets(uniq, skip_duplicates=False)
@@ -212,9 +221,10 @@ async def async_main(args: argparse.Namespace) -> None:
         do_scrape = False
 
     to_sheets = bool(getattr(args, "export_gsheets", False))
+    to_apps = bool(getattr(args, "export_apps_script", False))
 
     if args.export_only and not do_enrich and not args.rescore:
-        export_from_db(db, to_gsheets=to_sheets)
+        export_from_db(db, to_gsheets=to_sheets, to_apps_script=to_apps)
         db.close()
         return
 
@@ -223,7 +233,7 @@ async def async_main(args: argparse.Namespace) -> None:
             from parser.enrich.pipeline import rescore_db
 
             print("Rescore:", rescore_db(db))
-            export_from_db(db, to_gsheets=to_sheets)
+            export_from_db(db, to_gsheets=to_sheets, to_apps_script=to_apps)
             if not do_enrich and not args.listen:
                 return
 
@@ -252,7 +262,7 @@ async def async_main(args: argparse.Namespace) -> None:
             )
             print(f"Обогащение: {result}")
 
-        export_from_db(db, to_gsheets=to_sheets)
+        export_from_db(db, to_gsheets=to_sheets, to_apps_script=to_apps)
 
         if args.listen:
             if client is None:
@@ -287,7 +297,12 @@ def main() -> None:
     ap.add_argument(
         "--export-gsheets",
         action="store_true",
-        help="после Excel также выгрузить в Google Sheets (нужен .env)",
+        help="выгрузка в Sheets через service account (нужен Google Cloud)",
+    )
+    ap.add_argument(
+        "--export-apps-script",
+        action="store_true",
+        help="выгрузка в Sheets через Apps Script (без Cloud; GOOGLE_APPS_SCRIPT_URL)",
     )
     ap.add_argument("--rescore", action="store_true", help="пересчёт M/N/score без сети")
     ap.add_argument("--enrich", action="store_true", help="scrape + все enrich")
