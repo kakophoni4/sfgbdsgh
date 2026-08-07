@@ -129,6 +129,8 @@ def _turnover_cell(p: dict[str, Any], cl: dict[str, Any], sc: dict[str, Any]) ->
         if r.startswith("БФО:"):
             return _flat(r, 80)
         return _flat(f"БФО: {r}", 80)
+    if r.startswith("Companium:"):
+        return _flat(r, 80)
     if r.startswith("есть") or r.startswith("мало") or "выручка" in r:
         # checklist от buh, но блок buh мог не сохраниться
         return _flat(f"БФО: {r}", 80)

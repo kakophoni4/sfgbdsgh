@@ -677,7 +677,8 @@ def enrich_db(
             def _pick_buh(p: dict[str, Any]) -> bool:
                 if not (p.get("inn") or "").strip():
                     return False
-                buh = ((p.get("enrich") or {}).get("buh") or {})
+                enrich = p.get("enrich") or {}
+                buh = enrich.get("buh") or {}
                 if buh.get("years") and not buh.get("error"):
                     return False
                 # not_found и т.п. — карточки в БФО нет, не долбить каждый раунд
@@ -688,6 +689,20 @@ def enrich_db(
                     "no_org_id",
                     "bad_bfo_shape",
                 }:
+                    return False
+                cl = enrich.get("checklist") or {}
+                r = str(cl.get("R_turnover") or "").strip()
+                # уже есть обороты (в т.ч. из Companium) — БФО не жжём
+                if r and r not in {"", "ПРОВЕРИТЬ"} and not r.lower().startswith("нет данных"):
+                    return False
+                rev = str(cl.get("revenue_note") or "").strip()
+                comp = enrich.get("companium") or {}
+                if (
+                    comp.get("ogrn")
+                    and not comp.get("error")
+                    and rev
+                    and "нет сведений" not in rev.lower()
+                ):
                     return False
                 return True
 

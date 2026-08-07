@@ -653,6 +653,11 @@ def checklist_from_companium(report: CompaniumReport) -> dict[str, Any]:
         out["insurance_rub"] = report.insurance_rub
     if report.revenue_note:
         out["revenue_note"] = report.revenue_note
+        # мягко закрываем дыру оборотов, если БФО пустой (не затирает БФО через fill_gaps)
+        low = report.revenue_note.lower()
+        if "нет сведений" not in low and report.revenue_note.strip():
+            out["R_turnover"] = f"Companium: {report.revenue_note.strip()[:100]}"
+            out["U_reports_filed"] = "сдана"
     if report.licenses:
         out["licenses"] = report.licenses
     if report.checks:
