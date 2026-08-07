@@ -215,11 +215,12 @@ def checklist_from_checko(report: CheckoReport) -> dict[str, Any]:
         out["I_reliable"] = "ДА"
         out["I_note"] = "Checko: недостоверности не видно"
 
+    out["V_link"] = f"{report.url or BASE + '/company/' + report.ogrn}"
     if report.fedresurs_empty is True:
         out["V_leases"] = "нет лизинга/залогов"
-        out["V_note"] = "Checko/Федресурс: пусто"
+        out["V_note"] = "Checko: сообщений на Федресурсе нет"
     elif report.fedresurs_empty is False:
-        out["V_leases"] = "ПРОВЕРИТЬ"
-        out["V_note"] = "Checko/Федресурс: есть сообщения"
+        out["V_leases"] = "есть записи"
+        out["V_note"] = "Checko: на Федресурсе есть сообщения — смотри ссылку"
 
     return out

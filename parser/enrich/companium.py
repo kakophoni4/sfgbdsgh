@@ -325,9 +325,9 @@ def human_dossier(report: CompaniumReport) -> str:
     elif report.unreliable is True:
         parts.append("недостоверки: ЕСТЬ")
     if report.fedresurs_msgs == 0:
-        parts.append("федресурс: пусто")
+        parts.append("федресурс: записей нет")
     elif report.fedresurs_msgs:
-        parts.append(f"федресурс: {report.fedresurs_msgs} сообщ.")
+        parts.append(f"федресурс: есть записи ({report.fedresurs_msgs})")
     if report.employees is not None:
         parts.append(f"сотрудники: {report.employees}")
     if report.msp:
@@ -608,13 +608,16 @@ def checklist_from_companium(report: CompaniumReport) -> dict[str, Any]:
         out["I_reliable"] = "ПРОВЕРИТЬ"
         out["I_note"] = "Companium: недостоверность не определена"
 
+    out["V_link"] = f"{link}/fedresurs"
     if report.fedresurs_msgs is not None:
         if report.fedresurs_msgs == 0:
             out["V_leases"] = "нет лизинга/залогов"
-            out["V_note"] = "Companium/Федресурс: сообщений нет"
+            out["V_note"] = "Companium: сообщений на Федресурсе нет"
         else:
-            out["V_leases"] = "ПРОВЕРИТЬ"
-            out["V_note"] = f"Companium/Федресурс: сообщений≈{report.fedresurs_msgs}"
+            out["V_leases"] = "есть записи"
+            out["V_note"] = (
+                f"Companium: на Федресурсе ≈{report.fedresurs_msgs} сообщ. — смотри ссылку"
+            )
 
     # доп. поля для Excel (человекочитаемые)
     if report.employees is not None:

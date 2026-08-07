@@ -136,6 +136,9 @@ def _remap_checklist_labels(cl: dict[str, Any]) -> dict[str, Any]:
         out["V_leases"] = "нет лизинга/залогов"
     elif v == "ЕСТЬ":
         out["V_leases"] = "есть лизинг/залоги"
+    elif v == "ПРОВЕРИТЬ" and "сообщ" in str(out.get("V_note") or "").lower():
+        # старые прогоны: был счётчик сообщений, но писали «проверить»
+        out["V_leases"] = "есть записи"
     return out
 
 

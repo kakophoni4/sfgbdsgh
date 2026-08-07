@@ -52,6 +52,8 @@ def _flag(checklist: dict, key: str) -> str:
             return "ok"
         if low in {"есть", "есть лизинг/залоги"}:
             return "bad"
+        if "есть записи" in low:
+            return "warn"  # сообщения на Федресурсе есть, тип не разобран
         return ""
     if key in {"M_not_liquidating", "N_not_excluding", "I_reliable"}:
         if low == "да":
@@ -249,6 +251,9 @@ def score_payload(p: dict[str, Any]) -> dict:
     elif fv == "bad":
         score -= 8
         risks.append("есть лизинг/залоги (Федресурс)")
+    elif fv == "warn":
+        score -= 5
+        risks.append("на Федресурсе есть записи — открой ссылку (лизинг/залоги?)")
     elif fv == "check":
         score -= 1
         risks.append("V (лизинг) не проверен")

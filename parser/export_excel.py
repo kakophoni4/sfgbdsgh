@@ -113,6 +113,22 @@ def _human_flag(key: str, val: Any) -> str:
     return s
 
 
+def _v_cell(checklist: dict[str, Any]) -> str:
+    """Лизинг/Федресурс: текст + ссылка, без голого «проверить»."""
+    v = _human_flag("V_leases", checklist.get("V_leases"))
+    raw = str(checklist.get("V_leases") or "").lower()
+    if "есть записи" in raw:
+        v = "есть записи на Федресурсе"
+    elif raw in {"нет лизинга/залогов", "нет"}:
+        v = "нет лизинга/залогов"
+    elif "есть лизинг" in raw:
+        v = "есть лизинг/залоги"
+    link = (checklist.get("V_link") or "").strip()
+    note = (checklist.get("V_note") or "").strip()
+    parts = [p for p in (v, note, link) if p]
+    return " | ".join(parts)
+
+
 def row_from_payload(p: dict[str, Any]) -> list[Any]:
     scoring = p.get("scoring") or {}
     enrich = p.get("enrich") or {}
@@ -191,7 +207,7 @@ def row_from_payload(p: dict[str, Any]) -> list[Any]:
         _zsk_cell(p.get("zsk_claim") or ""),
         t_hint,
         _human_flag("U_reports_filed", checklist.get("U_reports_filed")),
-        checklist.get("V_leases") or "",
+        _v_cell(checklist),
         enrich.get("checked_at") or p.get("msg_date") or "",
         scoring.get("summary") or "",
         p.get("link") or "",
