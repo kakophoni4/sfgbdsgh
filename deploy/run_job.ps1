@@ -39,28 +39,15 @@ function Invoke-PyLogged {
         [Parameter(Mandatory = $true)][string[]]$PyArgs,
         [string[]]$ExtraLogs = @()
     )
-    # Важно: при $ErrorActionPreference=Stop любой stderr Python валит весь run_job.
-    $oldEap = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-        & $py @PyArgs 2>&1 | ForEach-Object {
-            if ($_ -is [System.Management.Automation.ErrorRecord]) {
-                $line = $_.Exception.Message
-                if (-not $line) { $line = "$_" }
-            } else {
-                $line = "$_"
-            }
-            Write-Host $line
-            Add-Content -Path $log -Value $line -Encoding UTF8
-            foreach ($el in $ExtraLogs) {
-                if ($el) { Add-Content -Path $el -Value $line -Encoding UTF8 }
-            }
+    & $py @PyArgs 2>&1 | ForEach-Object {
+        $line = "$_"
+        Write-Host $line
+        Add-Content -Path $log -Value $line -Encoding UTF8
+        foreach ($el in $ExtraLogs) {
+            if ($el) { Add-Content -Path $el -Value $line -Encoding UTF8 }
         }
-        if ($null -eq $LASTEXITCODE) { return 0 }
-        return [int]$LASTEXITCODE
-    } finally {
-        $ErrorActionPreference = $oldEap
     }
+    return $LASTEXITCODE
 }
 
 function Set-JobStatus([string]$stage, [string]$detail = "") {
@@ -98,7 +85,6 @@ if (-not $hasMutex) {
     exit 0
 }
 
-$script:jobFinishedOk = $false
 try {
     try {
         $lockStream = [System.IO.File]::Open(
@@ -115,87 +101,57 @@ try {
         try {
             & $py -c "from parser.job_status import mark_skip; mark_skip('lock file held')" 2>$null
         } catch {}
-        $script:jobFinishedOk = $true
         exit 0
     }
 
-    try {
-        $useApps = $false
-        $useSheets = $false
-        $envFile = Join-Path $Root ".env"
-        if (Test-Path $envFile) {
-            $envText = Get-Content $envFile -Raw -ErrorAction SilentlyContinue
-            if ($envText -match "GOOGLE_APPS_SCRIPT_URL=\S+") { $useApps = $true }
-            elseif ($envText -match "GOOGLE_SHEETS_ID=\S+") { $useSheets = $true }
-        }
-
-        Write-Log "START root=$Root apps=$useApps"
-        Set-JobStatus "START" "pid=$PID log=$stamp"
-        $code = 0
-
-        Set-JobStatus "scrape" "Telegram last 2 days"
-        Write-Log "==> scrape Telegram (2d)"
-        $ec = Invoke-PyLogged -PyArgs @("run_parser.py", "--since-days", "2", "--limit", "5000")
-        if ($ec -ne 0) { $code = $ec }
-
-        $maxRounds = 20
-        for ($i = 1; $i -le $maxRounds; $i++) {
-            Set-JobStatus "enrich" ("round $i/$maxRounds unique INNs, limit=0")
-            Write-Log ("==> enrich-core round {0}/{1} (unique, no limit)" -f $i, $maxRounds)
-            $enrichLog = Join-Path $logDir ("enrich_{0}_r{1}.log" -f $stamp, $i)
-            $ec = Invoke-PyLogged -PyArgs @("run_parser.py", "--enrich-only", "--enrich-core", "--enrich-limit", "0") -ExtraLogs @($enrichLog)
-            if ($ec -ne 0) {
-                $code = $ec
-                Write-Log "enrich exit=$ec - continue to export"
-                break
-            }
-            $tail = Get-Content $enrichLog -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
-            if ($tail -match "attempted.: 0") {
-                Write-Log "enrich: attempted=0 - no holes left"
-                break
-            }
-            $zeroLines = ([regex]::Matches($tail, ":\s*0\s")).Count
-            $srcLines = ([regex]::Matches($tail, ":\s*\d+\s")).Count
-            if ($srcLines -gt 0 -and $zeroLines -ge $srcLines) {
-                Write-Log "enrich: all sources 0 - done"
-                break
-            }
-        }
-
-        Set-JobStatus "export" "rescore + excel + sheets"
-        Write-Log "==> rescore + export"
-        $cmd = @("run_parser.py", "--rescore", "--export-only")
-        if ($useApps) { $cmd += "--export-apps-script" }
-        elseif ($useSheets) { $cmd += "--export-gsheets" }
-        $ec = Invoke-PyLogged -PyArgs $cmd
-        if ($ec -ne 0) { $code = $ec }
-
-        Write-Log ("DONE exit=$code log=$log")
-        try {
-            & $py -c "from parser.job_status import mark_done; mark_done('exit=$code')" 2>$null
-        } catch {
-            Set-JobStatus "DONE" "exit=$code"
-        }
-        $script:jobFinishedOk = $true
-        exit $code
-    } catch {
-        $err = $_.Exception.Message
-        Write-Log ("FAIL: " + $err)
-        try {
-            $safe = $err.Replace("'", " ")
-            & $py -c "from parser.job_status import mark_fail; mark_fail('$safe')" 2>$null
-        } catch {
-            Set-JobStatus "FAIL" $err
-        }
-        exit 1
+    $useApps = $false
+    $useSheets = $false
+    $envFile = Join-Path $Root ".env"
+    if (Test-Path $envFile) {
+        $envText = Get-Content $envFile -Raw -ErrorAction SilentlyContinue
+        if ($envText -match "GOOGLE_APPS_SCRIPT_URL=\S+") { $useApps = $true }
+        elseif ($envText -match "GOOGLE_SHEETS_ID=\S+") { $useSheets = $true }
     }
+
+    Write-Log "START root=$Root apps=$useApps"
+    Set-JobStatus "START" "pid=$PID log=$stamp"
+    $code = 0
+
+    Set-JobStatus "scrape" "Telegram last 2 days"
+    Write-Log "==> scrape Telegram (2d)"
+    $ec = Invoke-PyLogged -PyArgs @("run_parser.py", "--since-days", "2", "--limit", "5000")
+    if ($ec -ne 0) { $code = $ec }
+
+    # 1 раунд: дыры добьёт следующий тик планировщика (каждые 5 мин)
+    $maxRounds = 1
+    for ($i = 1; $i -le $maxRounds; $i++) {
+        Set-JobStatus "enrich" ("round $i/$maxRounds unique INNs, limit=0")
+        Write-Log ("==> enrich-core round {0}/{1} (unique, no limit)" -f $i, $maxRounds)
+        $enrichLog = Join-Path $logDir ("enrich_{0}_r{1}.log" -f $stamp, $i)
+        $ec = Invoke-PyLogged -PyArgs @("run_parser.py", "--enrich-only", "--enrich-core", "--enrich-limit", "0") -ExtraLogs @($enrichLog)
+        if ($ec -ne 0) {
+            $code = $ec
+            Write-Log "enrich exit=$ec - continue to export"
+        }
+    }
+
+    Set-JobStatus "export" "rescore + excel + sheets"
+    Write-Log "==> rescore + export"
+    $cmd = @("run_parser.py", "--rescore", "--export-only")
+    if ($useApps) { $cmd += "--export-apps-script" }
+    elseif ($useSheets) { $cmd += "--export-gsheets" }
+    $ec = Invoke-PyLogged -PyArgs $cmd
+    if ($ec -ne 0) { $code = $ec }
+
+    Write-Log ("DONE exit=$code log=$log")
+    try {
+        & $py -c "from parser.job_status import mark_done; mark_done('exit=$code')" 2>$null
+    } catch {
+        Set-JobStatus "DONE" "exit=$code"
+    }
+    exit $code
 }
 finally {
-    if (-not $script:jobFinishedOk) {
-        try {
-            & $py -c "from parser.job_status import mark_fail; mark_fail('process ended without DONE (killed or crash)')" 2>$null
-        } catch {}
-    }
     if ($null -ne $lockStream) {
         try { $lockStream.Close() } catch {}
         try { $lockStream.Dispose() } catch {}
