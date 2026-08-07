@@ -85,10 +85,14 @@ def _get(session, url: str) -> dict:
 
 
 def _row_to_record(row: dict[str, Any]) -> EgrulRecord:
-    # e — дата/признак прекращения; cnt — служебный счётчик (НЕ статус!)
-    status = (row.get("e") or "").strip()
-    if not status or status in {"1", "0", "-"}:
+    # e — часто пусто у действующих; иногда дата прекращения (не путать со статусом-текстом)
+    raw_e = (row.get("e") or "").strip()
+    if not raw_e or raw_e in {"1", "0", "-"}:
         status = "действующая"
+    elif re.fullmatch(r"\d{1,2}[./]\d{1,2}[./]\d{2,4}", raw_e):
+        status = f"прекращена {raw_e}"
+    else:
+        status = raw_e
     return EgrulRecord(
         name=(row.get("c") or row.get("n") or "").strip(),
         name_full=(row.get("n") or "").strip(),
