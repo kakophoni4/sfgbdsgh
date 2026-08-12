@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from telethon import TelegramClient, events
 from telethon.tl.custom.message import Message
 
-from config import CHAT_IDS, HISTORY_LIMIT
+from config import ALL_CHAT_IDS, HISTORY_LIMIT
 
 from .db import ListingDB
 from .extract import parse_message
@@ -59,7 +59,7 @@ async def scrape_history(
     since_days: int | None = None,
 ) -> dict:
     """Тянет историю чата. since_days — только сообщения за последние N дней (с обрывом)."""
-    chat_ids = chat_ids or CHAT_IDS
+    chat_ids = chat_ids or ALL_CHAT_IDS
     total_msgs = 0
     total_listings = 0
     skipped_old = 0
@@ -100,7 +100,7 @@ async def scrape_history(
 
 
 async def listen_live(client: TelegramClient, db: ListingDB, chat_ids: list[int] | None = None) -> None:
-    chat_ids = chat_ids or CHAT_IDS
+    chat_ids = chat_ids or ALL_CHAT_IDS
     print(f"Live-слушаю чаты: {chat_ids}. Ctrl+C для выхода.")
 
     @client.on(events.NewMessage(chats=chat_ids))

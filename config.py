@@ -20,6 +20,26 @@ EXPORT_PATH = DATA_DIR / "checklist_export.xlsx"
 CHAT_IDS = [
     -1001909540858,  # Продажа компаний, готовые ООО
 ]
+# Очередь ИНН (кидают просто номер) — «Проверка ООО»
+INN_CHAT_IDS = [
+    -5451292146,
+]
+# Все чаты для scrape / live
+ALL_CHAT_IDS = CHAT_IDS + INN_CHAT_IDS
+
+SOURCE_SALES = "группа продаж"
+SOURCE_INN_CHAT = "чат проверка"
+
+SOURCE_BY_CHAT: dict[int, str] = {
+    -1001909540858: SOURCE_SALES,
+    -5451292146: SOURCE_INN_CHAT,
+}
+
+
+def source_label(chat_id: int | None) -> str:
+    if chat_id is None:
+        return SOURCE_SALES
+    return SOURCE_BY_CHAT.get(int(chat_id), SOURCE_SALES)
 
 # Сколько сообщений тянуть при backfill (потолок; с --since-days режет по дате)
 HISTORY_LIMIT = int(os.getenv("HISTORY_LIMIT", "400"))

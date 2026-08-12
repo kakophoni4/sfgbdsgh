@@ -56,6 +56,26 @@ def selftest() -> None:
         print(f"expect={expect} got={len(got)}")
         if len(got) != expect:
             ok = False
+        if got and got[0].source != "группа продаж":
+            print("bad source sales", got[0].source)
+            ok = False
+
+    inn_q = parse_message(
+        "7327095420",
+        chat_id=-5451292146,
+        message_id=794,
+        sender="me",
+        msg_date="2026-08-12T21:38:44+00:00",
+    )
+    print(f"inn_queue expect=1 got={len(inn_q)}")
+    if (
+        len(inn_q) != 1
+        or inn_q[0].inn != "7327095420"
+        or inn_q[0].source != "чат проверка"
+    ):
+        ok = False
+        print("inn_queue FAIL", inn_q)
+
     from parser.enrich.egrul import status_flags
 
     assert status_flags("1")["status"] == "действующая"
@@ -128,23 +148,43 @@ def export_from_db(
     to_gsheets: bool = False,
     to_apps_script: bool = False,
 ) -> Path:
+    from parser.export_apps_script import build_export_body, export_apps_script
+    from parser.export_fingerprint import (
+        fingerprint,
+        load_fingerprint,
+        save_fingerprint,
+    )
+
     payloads = mark_duplicates(db.all_payloads())
     for p in payloads:
         db.save_payload(p)
     uniq = unique_only(payloads)
+
+    body, skipped = build_export_body(uniq, skip_duplicates=False)
+    fp = fingerprint(body)
+    if fp and fp == load_fingerprint():
+        print(
+            f"Экспорт: без изменений (fingerprint={fp[:12]}…) — "
+            f"Excel/Sheets не перезаписываю | уникальных={len(uniq)} | "
+            f"stats={db.stats()}"
+        )
+        return EXPORT_PATH
+
     path = export_xlsx(uniq, EXPORT_PATH, skip_duplicates=False)
     print(
         f"Excel: {path} | всего={len(payloads)} | уникальных={len(uniq)} | "
         f"stats={db.stats()}"
     )
     if to_apps_script:
-        from parser.export_apps_script import export_apps_script
-
-        export_apps_script(uniq, skip_duplicates=False)
+        export_apps_script(
+            uniq, skip_duplicates=False, body=body, skipped=skipped
+        )
     elif to_gsheets:
         from parser.export_gsheets import export_gsheets
 
         export_gsheets(uniq, skip_duplicates=False)
+    save_fingerprint(fp)
+    print(f"Экспорт: обновлено (fingerprint={fp[:12]}…)")
     return path
 
 

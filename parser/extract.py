@@ -141,6 +141,7 @@ class Listing:
     link: str = ""
     msg_date: str = ""
     raw_text: str = ""
+    source: str = ""  # группа продаж / чат проверка
     is_listing: bool = True
     skip_reason: str = ""
 
@@ -149,10 +150,11 @@ class Listing:
 
 
 def message_link(chat_id: int, message_id: int) -> str:
-    raw = str(abs(chat_id))
-    if raw.startswith("100"):
-        raw = raw[3:]
-    return f"https://t.me/c/{raw}/{message_id}"
+    """Публичная ссылка только для супергрупп/каналов (-100...)."""
+    raw = str(abs(int(chat_id)))
+    if raw.startswith("100") and len(raw) >= 13:
+        return f"https://t.me/c/{raw[3:]}/{message_id}"
+    return ""
 
 
 def _parse_money(num: str, unit: str | None) -> int | None:
@@ -517,6 +519,8 @@ def parse_block(
     sender: str,
     msg_date: str,
 ) -> Listing:
+    from config import source_label
+
     block = trim_footer(block)
     listing = Listing(
         chat_id=chat_id,
@@ -526,6 +530,7 @@ def parse_block(
         seller_from_msg=sender or "",
         msg_date=msg_date,
         raw_text=block,
+        source=source_label(chat_id),
     )
 
     skip = is_spam_or_ad(block)
@@ -583,6 +588,45 @@ def parse_block(
     return listing
 
 
+def parse_inn_queue_message(
+    text: str,
+    *,
+    chat_id: int,
+    message_id: int,
+    sender: str = "",
+    msg_date: str = "",
+) -> list[Listing]:
+    """Сообщения из чата «Проверка ООО»: просто ИНН (один или несколько)."""
+    from config import source_label
+
+    inns = re.findall(r"\b(\d{10})\b", text or "")
+    # убрать куски ОГРН
+    ogrns = set(RE_OGRN.findall(text or ""))
+    seen: set[str] = set()
+    out: list[Listing] = []
+    for inn in inns:
+        if inn in seen:
+            continue
+        if any(inn in o for o in ogrns):
+            continue
+        seen.add(inn)
+        out.append(
+            Listing(
+                inn=inn,
+                chat_id=chat_id,
+                message_id=message_id,
+                block_index=len(out),
+                link=message_link(chat_id, message_id),
+                seller_from_msg=sender or "",
+                msg_date=msg_date,
+                raw_text=(text or "").strip()[:500],
+                source=source_label(chat_id),
+                is_listing=True,
+            )
+        )
+    return out
+
+
 def parse_message(
     text: str,
     *,
@@ -593,6 +637,17 @@ def parse_message(
 ) -> list[Listing]:
     if not text or not text.strip():
         return []
+
+    from config import INN_CHAT_IDS
+
+    if int(chat_id) in set(INN_CHAT_IDS):
+        return parse_inn_queue_message(
+            text,
+            chat_id=chat_id,
+            message_id=message_id,
+            sender=sender,
+            msg_date=msg_date,
+        )
 
     global_skip = is_spam_or_ad(text)
     if global_skip in {"catalog_ad", "price_list"} and not RE_INN_LABELED.search(text):

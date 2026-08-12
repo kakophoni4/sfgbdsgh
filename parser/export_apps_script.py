@@ -19,10 +19,11 @@ from parser.export_excel import (
     _zsk_cell_payload,
 )
 
-EXPORT_VERSION = "v4-row-colors-score"
+EXPORT_VERSION = "v5-source-skip"
 
 # Компактная шапка для онлайн-таблицы (без сырого текста и ручных пустышек)
 SHEET_HEADERS = [
+    "Источник",
     "Название",
     "ИНН",
     "Цена",
@@ -46,8 +47,8 @@ SHEET_HEADERS = [
     "Статус ЕГРЮЛ",
 ]
 
-VERDICT_COL = 15  # 1-based для Apps Script
-ZSK_COL = 14
+VERDICT_COL = 16  # 1-based для Apps Script
+ZSK_COL = 15
 
 _WS = re.compile(r"\s+")
 _BUYER_PREFIXES = (
@@ -161,6 +162,8 @@ def _short_verdict(p: dict[str, Any]) -> str:
 
 
 def sheet_row(p: dict[str, Any]) -> list[Any]:
+    from config import source_label
+
     enrich = p.get("enrich") or {}
     cl = enrich.get("checklist") or {}
     egrul = enrich.get("egrul") or {}
@@ -179,7 +182,9 @@ def sheet_row(p: dict[str, Any]) -> list[Any]:
     p_txt = _flat(cl.get("P_court_cases") or "", 40) or "нет данных"
     l_txt = _flat(cl.get("L_debts_il") or "", 40) or "нет данных"
     v_txt = _flat(cl.get("V_leases") or cl.get("V_note") or "", 80) or "нет данных"
+    src = _flat(p.get("source") or source_label(p.get("chat_id")), 40)
     return [
+        src,
         _display_name(p),
         _payload_inn(p),
         price if price is not None else "",
@@ -205,15 +210,12 @@ def sheet_row(p: dict[str, Any]) -> list[Any]:
     ]
 
 
-def export_apps_script(
+def build_export_body(
     payloads: list[dict[str, Any]],
     *,
     skip_duplicates: bool = True,
-) -> str:
-    url = (GOOGLE_APPS_SCRIPT_URL or "").strip()
-    if not url:
-        raise SystemExit("В .env нет GOOGLE_APPS_SCRIPT_URL")
-
+) -> tuple[dict[str, Any], int]:
+    """Собирает JSON для Apps Script. Возвращает (body, skipped_junk)."""
     if skip_duplicates:
         payloads = [p for p in payloads if not p.get("is_duplicate")]
 
@@ -257,6 +259,27 @@ def export_apps_script(
         "zskCol": ZSK_COL,
         "version": EXPORT_VERSION,
     }
+    return body, skipped
+
+
+def export_apps_script(
+    payloads: list[dict[str, Any]],
+    *,
+    skip_duplicates: bool = True,
+    body: dict[str, Any] | None = None,
+    skipped: int | None = None,
+) -> str:
+    url = (GOOGLE_APPS_SCRIPT_URL or "").strip()
+    if not url:
+        raise SystemExit("В .env нет GOOGLE_APPS_SCRIPT_URL")
+
+    if body is None:
+        body, skipped_calc = build_export_body(payloads, skip_duplicates=skip_duplicates)
+        if skipped is None:
+            skipped = skipped_calc
+    if skipped is None:
+        skipped = 0
+
     token = (GOOGLE_APPS_SCRIPT_TOKEN or "").strip()
     post_url = url
     if token:

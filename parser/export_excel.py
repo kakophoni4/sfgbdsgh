@@ -12,6 +12,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 # Без букв A–X в шапке — понятные названия для заказчика
 HEADERS = [
+    "Источник",
     "Название",
     "ИНН",
     "Дата регистрации",
@@ -54,6 +55,9 @@ HEADERS = [
     "Учредитель",
     "Сырой текст",
 ]
+
+# колонка ЗСК после вставки «Источник» (1-based)
+ZSK_EXCEL_COL = 20
 
 ZSK_FILL = {
     "green": PatternFill("solid", fgColor="C6EFCE"),
@@ -228,6 +232,7 @@ def row_from_payload(p: dict[str, Any]) -> list[Any]:
         taxes = companium.get("taxes_rub")
     founder = checklist.get("founder") or companium.get("founder") or ""
 
+    from config import source_label
     from parser.extract import is_plausible_firm_name
 
     disp_name = ""
@@ -240,10 +245,12 @@ def row_from_payload(p: dict[str, Any]) -> list[Any]:
     elif inn and str(inn).isdigit():
         disp_name = f"ООО (ИНН {inn})"
 
+    src = (p.get("source") or "").strip() or source_label(p.get("chat_id"))
+
     return [
+        src,
         disp_name,
         inn or egrul.get("inn") or "",
-
         checklist.get("C_reg_date") or p.get("reg_date_raw") or "",
         _price_cell(p.get("price_rub")),
         "",  # цена покупки вручную
@@ -288,22 +295,23 @@ def row_from_payload(p: dict[str, Any]) -> list[Any]:
 
 
 _WIDTHS = {
-    1: 28,
-    2: 14,
+    1: 16,
+    2: 28,
     3: 14,
-    4: 12,
-    6: 36,
-    7: 14,
-    12: 22,
-    15: 18,
-    16: 14,
-    19: 24,
-    24: 48,
-    25: 28,
-    26: 16,
-    33: 56,
-    39: 28,
-    40: 40,
+    4: 14,
+    5: 12,
+    7: 36,
+    8: 14,
+    13: 22,
+    16: 18,
+    17: 14,
+    20: 24,
+    25: 48,
+    26: 28,
+    27: 16,
+    34: 56,
+    40: 28,
+    41: 40,
 }
 
 
@@ -363,7 +371,7 @@ def _write_sheet(ws: Worksheet, payloads: list[dict[str, Any]]) -> None:
                 ws.cell(r, c).fill = fill
         # ЗСК поверх — чуть заметнее в своей колонке
         if zsk in ZSK_FILL:
-            ws.cell(r, 19).fill = ZSK_FILL[zsk]
+            ws.cell(r, ZSK_EXCEL_COL).fill = ZSK_FILL[zsk]
 
     for i in range(1, len(HEADERS) + 1):
         ws.column_dimensions[get_column_letter(i)].width = _WIDTHS.get(i, 14)

@@ -72,16 +72,25 @@ def mark_duplicates(payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
     Оставляет лучший лот в группе (выше score, свежее сообщение).
     Остальным ставит is_duplicate=True.
     """
+    from config import INN_CHAT_IDS
+
+    inn_chats = {int(x) for x in INN_CHAT_IDS}
     payloads = annotate_listing_history(payloads)
     best_idx: dict[str, int] = {}
-    scores: list[tuple[int, str, int]] = []
+    scores: list[tuple[int, int, str, int]] = []
     for i, p in enumerate(payloads):
         sc = int((p.get("scoring") or {}).get("score") or 0)
+        # при равном score предпочитаем объявление из группы продаж, не очередь ИНН
+        prefer_sales = 0 if int(p.get("chat_id") or 0) in inn_chats else 1
         dt = p.get("msg_date") or ""
-        scores.append((sc, dt, i))
+        scores.append((sc, prefer_sales, dt, i))
 
-    # сначала более высокий score, потом более новая дата
-    order = sorted(range(len(payloads)), key=lambda i: (scores[i][0], scores[i][1]), reverse=True)
+    # score → группа продаж → более новая дата
+    order = sorted(
+        range(len(payloads)),
+        key=lambda i: (scores[i][0], scores[i][1], scores[i][2]),
+        reverse=True,
+    )
 
     seen: set[str] = set()
     keep: set[int] = set()

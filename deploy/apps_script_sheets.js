@@ -7,7 +7,7 @@
  */
 
 var EXPECTED_TOKEN = "";
-var VERSION = "v4-row-colors-score";
+var VERSION = "v5-source-skip";
 
 function doPost(e) {
   try {
@@ -106,7 +106,9 @@ function doPost(e) {
       head.setHorizontalAlignment("center");
       sh.setRowHeight(1, 32);
       sh.setFrozenRows(1);
-      if (cols >= 2) sh.setFrozenColumns(2);
+      // Источник + Название + ИНН
+      if (cols >= 3) sh.setFrozenColumns(3);
+      else if (cols >= 2) sh.setFrozenColumns(2);
 
       if (rows.length > 0) {
         sh.setRowHeights(2, rows.length, 24);
@@ -155,7 +157,7 @@ function doPost(e) {
         sh.getRange(1, 1, rows.length + 1, cols).createFilter();
       }
 
-      _setWidths(sh, cols);
+      _setWidths(sh, cols, headers);
       // цвет вкладки: сегодня/свежие — синий, старее — серый
       try {
         sh.setTabColor(i < 3 ? "#2E75B6" : "#9AA5B1");
@@ -208,39 +210,41 @@ function doGet() {
   });
 }
 
-function _setWidths(sh, cols) {
-  // 1 Название … 14 ЗСК, 15 Итог, 16 Балл …
+function _setWidths(sh, cols, headers) {
+  // 1 Источник, 2 Название … 15 ЗСК, 16 Итог, 17 Балл …
   var widths = {
-    1: 200,
-    2: 110,
-    3: 90,
-    4: 110,
-    5: 80,
-    6: 240,
-    7: 100,
-    8: 110,
-    9: 160,
-    10: 130,
-    11: 140,
-    12: 100,
-    13: 130,
-    14: 120,
-    15: 420, // Итог — широкий
-    16: 60,
-    17: 110,
-    18: 120,
-    19: 200,
-    20: 220,
-    21: 140,
+    1: 120,
+    2: 200,
+    3: 110,
+    4: 90,
+    5: 110,
+    6: 80,
+    7: 240,
+    8: 100,
+    9: 110,
+    10: 160,
+    11: 130,
+    12: 140,
+    13: 100,
+    14: 130,
+    15: 120,
+    16: 420, // Итог — широкий
+    17: 60,
+    18: 110,
+    19: 120,
+    20: 200,
+    21: 220,
+    22: 140,
   };
   for (var c = 1; c <= cols; c++) {
     sh.setColumnWidth(c, widths[c] || 100);
   }
-  // перенос в колонке Итог (15)
-  if (cols >= 15) {
+  var itogCol = _headerIndex(headers || [], "Итог");
+  if (itogCol < 0) itogCol = 16;
+  if (itogCol >= 1 && itogCol <= cols) {
     var last = sh.getLastRow();
     if (last >= 2) {
-      sh.getRange(2, 15, last, 15).setWrap(true);
+      sh.getRange(2, itogCol, last, itogCol).setWrap(true);
       sh.setRowHeights(2, last - 1, 48);
     }
   }
