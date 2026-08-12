@@ -19,7 +19,7 @@ from parser.export_excel import (
     _zsk_cell_payload,
 )
 
-EXPORT_VERSION = "v5-source-skip"
+EXPORT_VERSION = "v5.1-inn-text"
 
 # Компактная шапка для онлайн-таблицы (без сырого текста и ручных пустышек)
 SHEET_HEADERS = [
@@ -183,10 +183,12 @@ def sheet_row(p: dict[str, Any]) -> list[Any]:
     l_txt = _flat(cl.get("L_debts_il") or "", 40) or "нет данных"
     v_txt = _flat(cl.get("V_leases") or cl.get("V_note") or "", 80) or "нет данных"
     src = _flat(p.get("source") or source_label(p.get("chat_id")), 40)
+    inn_s = _payload_inn(p)
     return [
         src,
         _display_name(p),
-        _payload_inn(p),
+        # строка: иначе Sheets рисует 9,723,214,226
+        inn_s,
         price if price is not None else "",
         _flat(cl.get("C_reg_date") or egrul.get("reg_date") or p.get("reg_date_raw") or "", 40),
         _flat(p.get("sno") or "", 20),

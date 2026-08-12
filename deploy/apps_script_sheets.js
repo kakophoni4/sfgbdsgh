@@ -7,7 +7,7 @@
  */
 
 var EXPECTED_TOKEN = "";
-var VERSION = "v5-source-skip";
+var VERSION = "v5.1-inn-text";
 
 function doPost(e) {
   try {
@@ -70,9 +70,11 @@ function doPost(e) {
         }
       }
 
-      // Балл — всегда текст (число 1..100 Sheets иначе рисует как дату 1900-xx)
+      // Балл / ИНН — всегда текст (иначе Sheets: дата или 9,723,214,226)
       var scoreCol = _headerIndex(headers, "Балл");
-      if (scoreCol < 0) scoreCol = 16;
+      if (scoreCol < 0) scoreCol = 17;
+      var innCol = _headerIndex(headers, "ИНН");
+      if (innCol < 0) innCol = 3;
       if (scoreCol >= 1 && scoreCol <= cols) {
         for (var sr = 1; sr < all.length; sr++) {
           var sv = all[sr][scoreCol - 1];
@@ -80,6 +82,21 @@ function doPost(e) {
             all[sr][scoreCol - 1] = String(sv);
           }
         }
+      }
+      if (innCol >= 1 && innCol <= cols) {
+        for (var ir = 1; ir < all.length; ir++) {
+          var iv = all[ir][innCol - 1];
+          if (iv !== "" && iv !== null && iv !== undefined) {
+            // только цифры; ведущий ' заставляет Sheets держать TEXT
+            var is = String(iv).replace(/[^\d]/g, "");
+            all[ir][innCol - 1] = is ? "'" + is : "";
+          }
+        }
+        // формат TEXT до записи — иначе setValues всё равно сделает number
+        sh.getRange(1, innCol, Math.max(all.length, 2), innCol).setNumberFormat("@");
+      }
+      if (scoreCol >= 1 && scoreCol <= cols) {
+        sh.getRange(1, scoreCol, Math.max(all.length, 2), scoreCol).setNumberFormat("@");
       }
 
       var range = sh.getRange(1, 1, all.length, cols);
@@ -90,6 +107,9 @@ function doPost(e) {
       range.setWrap(false);
       if (scoreCol >= 1 && scoreCol <= cols && all.length >= 2) {
         sh.getRange(2, scoreCol, all.length, scoreCol).setNumberFormat("@");
+      }
+      if (innCol >= 1 && innCol <= cols && all.length >= 2) {
+        sh.getRange(2, innCol, all.length, innCol).setNumberFormat("@");
       }
       // Цена — обычное число, не дата
       var priceCol = _headerIndex(headers, "Цена");
