@@ -5,7 +5,10 @@ xlsx целиком с Windows рвёт TCP (10054). JSON по нескольк�
 from __future__ import annotations
 
 import json
+import os
 import ssl
+import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -18,10 +21,12 @@ from openpyxl.utils import get_column_letter
 
 from config import (
     CRM_EXPORT_PATH,
+    DATA_DIR,
     LAVOK_INGEST_TOKEN,
     LAVOK_INGEST_URL,
 )
 from parser.export_apps_script import SHEET_HEADERS, build_export_body
+from parser.export_fingerprint import fingerprint
 
 # CRM ждёт «Отчетность» без ё
 CRM_HEADERS = [h.replace("Отчётность", "Отчетность") for h in SHEET_HEADERS]
@@ -55,7 +60,9 @@ HEADER_TO_FIELD = {
     "Статус ЕГРЮЛ": "egrul_status",
 }
 
-BATCH_SIZE = 1  # на Windows пачки >1 часто рвут TCP (10054)
+# curl на Windows стабильнее Python TLS к этому API
+BATCH_SIZE = int(os.getenv("LAVOK_BATCH_SIZE", "15"))
+SENT_PATH = DATA_DIR / "crm_sent.json"
 FIELD_LIMITS = {
     "summary": 1200,
     "companium": 500,
@@ -193,15 +200,106 @@ def write_crm_xlsx(
 
 def _ssl_ctx() -> ssl.SSLContext:
     ctx = ssl.create_default_context()
-    # не зажимаем TLS — на части хостов max=1.2 даёт обрыв
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.set_alpn_protocols(["http/1.1"])
     return ctx
 
 
 def _opener():
-    # Пустой ProxyHandler: не ходить в CRM через системный/asocks прокси.
     return build_opener(ProxyHandler({}), HTTPSHandler(context=_ssl_ctx()))
+
+
+def _item_key(item: dict[str, Any]) -> str:
+    return f"{item.get('inn')}|{item.get('sheet_date')}"
+
+
+def _load_sent() -> dict[str, str]:
+    if not SENT_PATH.is_file():
+        return {}
+    try:
+        data = json.loads(SENT_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_sent(sent: dict[str, str]) -> None:
+    SENT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SENT_PATH.write_text(
+        json.dumps(sent, ensure_ascii=False, indent=0), encoding="utf-8"
+    )
+
+
+def _filter_delta(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    sent = _load_sent()
+    out: list[dict[str, Any]] = []
+    for it in items:
+        h = fingerprint(it)
+        if sent.get(_item_key(it)) == h:
+            continue
+        out.append(it)
+    return out, len(items) - len(out)
+
+
+def _mark_sent(items: list[dict[str, Any]]) -> None:
+    sent = _load_sent()
+    for it in items:
+        sent[_item_key(it)] = fingerprint(it)
+    _save_sent(sent)
+
+
+def _post_json_curl(url: str, token: str, payload: dict[str, Any], timeout: int = 90) -> dict[str, Any]:
+    raw = json.dumps(payload, ensure_ascii=False)
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", suffix=".json", delete=False
+    ) as fh:
+        fh.write(raw)
+        tmp = fh.name
+    try:
+        cmd = [
+            "curl.exe",
+            "-sS",
+            "-X",
+            "POST",
+            url,
+            "-H",
+            f"X-Lavok-Ingest-Token: {token}",
+            "-H",
+            "Content-Type: application/json; charset=utf-8",
+            "-H",
+            "Accept: application/json",
+            "-H",
+            "User-Agent: firmy-lavok-parser/1.3-curl",
+            "--data-binary",
+            f"@{tmp}",
+            "--connect-timeout",
+            "20",
+            "--max-time",
+            str(timeout),
+            "--retry",
+            "2",
+            "--retry-delay",
+            "1",
+            "--noproxy",
+            "*",
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        out = (proc.stdout or "").strip()
+        err = (proc.stderr or "").strip()
+        if proc.returncode != 0:
+            raise RuntimeError(f"curl exit={proc.returncode}: {err or out[:300]}")
+        try:
+            data = json.loads(out) if out else {}
+        except Exception as exc:
+            raise RuntimeError(f"curl bad json: {out[:300]}") from exc
+        if isinstance(data, dict) and data.get("error"):
+            raise RuntimeError(f"CRM error: {data}")
+        return data if isinstance(data, dict) else {"ok": True, "data": data}
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 def _post_json_urllib(url: str, token: str, payload: dict[str, Any], timeout: int = 60) -> dict[str, Any]:
@@ -211,7 +309,7 @@ def _post_json_urllib(url: str, token: str, payload: dict[str, Any], timeout: in
     req.add_header("X-Lavok-Ingest-Token", token)
     req.add_header("Accept", "application/json")
     req.add_header("Connection", "close")
-    req.add_header("User-Agent", "firmy-lavok-parser/1.2")
+    req.add_header("User-Agent", "firmy-lavok-parser/1.3")
     try:
         with _opener().open(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8", errors="replace")
@@ -238,14 +336,14 @@ def _post_json_requests(url: str, token: str, payload: dict[str, Any], timeout: 
     import requests
 
     sess = requests.Session()
-    sess.trust_env = False  # ignore HTTP(S)_PROXY / asocks
+    sess.trust_env = False
     resp = sess.post(
         url,
         headers={
             "Content-Type": "application/json; charset=utf-8",
             "X-Lavok-Ingest-Token": token,
             "Accept": "application/json",
-            "User-Agent": "firmy-lavok-parser/1.2",
+            "User-Agent": "firmy-lavok-parser/1.3",
             "Connection": "close",
         },
         json=payload,
@@ -260,24 +358,32 @@ def _post_json_requests(url: str, token: str, payload: dict[str, Any], timeout: 
     return data if isinstance(data, dict) else {"ok": True, "data": data}
 
 
-def _post_json(url: str, token: str, payload: dict[str, Any], timeout: int = 60) -> dict[str, Any]:
+def _post_json(url: str, token: str, payload: dict[str, Any], timeout: int = 90) -> dict[str, Any]:
+    errors: list[str] = []
+    # 1) curl — на Win чаще всего проходит туда, где Python ловит 10054
+    try:
+        return _post_json_curl(url, token, payload, timeout=timeout)
+    except Exception as exc:
+        errors.append(f"curl: {exc}")
     try:
         return _post_json_requests(url, token, payload, timeout=timeout)
-    except Exception as first:
-        try:
-            return _post_json_urllib(url, token, payload, timeout=timeout)
-        except Exception as second:
-            raise RuntimeError(f"requests: {first}; urllib: {second}") from second
+    except Exception as exc:
+        errors.append(f"requests: {exc}")
+    try:
+        return _post_json_urllib(url, token, payload, timeout=timeout)
+    except Exception as exc:
+        errors.append(f"urllib: {exc}")
+    raise RuntimeError(" | ".join(errors))
 
 
-def _post_batch(url: str, token: str, batch: list[dict[str, Any]], retries: int = 5) -> dict[str, Any]:
+def _post_batch(url: str, token: str, batch: list[dict[str, Any]], retries: int = 4) -> dict[str, Any]:
     last_err: Exception | None = None
     for attempt in range(1, retries + 1):
         try:
             return _post_json(url, token, {"items": batch})
         except Exception as exc:
             last_err = exc
-            wait = min(25, 2 ** attempt)
+            wait = min(20, 2 ** attempt)
             print(
                 f"CRM ingest: fail {len(batch)} rows attempt {attempt}/{retries}: {exc} — sleep {wait}s",
                 flush=True,
@@ -292,6 +398,7 @@ def ingest_crm_body(
     *,
     token: str | None = None,
     url: str | None = None,
+    force_all: bool = False,
 ) -> dict[str, Any]:
     xlsx_url = (url if url is not None else LAVOK_INGEST_URL).strip()
     token = (token if token is not None else LAVOK_INGEST_TOKEN).strip()
@@ -306,10 +413,19 @@ def ingest_crm_body(
         print("CRM ingest: нечего слать (0 строк с ИНН)", flush=True)
         return {"sheets": 0, "upserted": 0, "created": 0, "updated": 0}
 
+    skipped = 0
+    if not force_all:
+        items, skipped = _filter_delta(items)
+
     print(
-        f"CRM ingest: POST {endpoint} | rows={len(items)} | batch={BATCH_SIZE} | no-proxy",
+        f"CRM ingest: POST {endpoint} | send={len(items)} | skipped_same={skipped} | "
+        f"batch={BATCH_SIZE} | via=curl",
         flush=True,
     )
+    if not items:
+        print("CRM ingest: всё уже отправлялось — skip", flush=True)
+        return {"sheets": 0, "upserted": 0, "created": 0, "updated": 0, "skipped": skipped}
+
     created = 0
     updated = 0
     upserted = 0
@@ -319,11 +435,34 @@ def ingest_crm_body(
         chunk = items[offset : offset + BATCH_SIZE]
         try:
             data = _post_batch(endpoint, token, chunk)
+            _mark_sent(chunk)
         except Exception as exc:
-            inns = ",".join(str(x.get("inn") or "?") for x in chunk)
-            print(f"CRM ingest: SKIP batch inns={inns}: {exc}", flush=True)
-            failed.append(inns)
-            time.sleep(1.0)
+            # пачка не прошла — по одной через curl
+            if len(chunk) > 1:
+                print(f"CRM ingest: дроблю {len(chunk)} → по 1", flush=True)
+                for one in chunk:
+                    try:
+                        part = _post_batch(endpoint, token, [one])
+                        _mark_sent([one])
+                        created += int(part.get("created") or 0)
+                        updated += int(part.get("updated") or 0)
+                        upserted += int(part.get("upserted") or 0)
+                        sheets = max(sheets, int(part.get("sheets") or 0))
+                        print(
+                            f"CRM ingest: batch ok inn={one.get('inn')}",
+                            flush=True,
+                        )
+                    except Exception as one_exc:
+                        print(
+                            f"CRM ingest: SKIP inn={one.get('inn')}: {one_exc}",
+                            flush=True,
+                        )
+                        failed.append(str(one.get("inn") or "?"))
+                time.sleep(0.2)
+                continue
+            print(f"CRM ingest: SKIP inn={chunk[0].get('inn')}: {exc}", flush=True)
+            failed.append(str(chunk[0].get("inn") or "?"))
+            time.sleep(0.5)
             continue
         created += int(data.get("created") or 0)
         updated += int(data.get("updated") or 0)
@@ -333,7 +472,7 @@ def ingest_crm_body(
             f"CRM ingest: batch {offset + 1}-{offset + len(chunk)}/{len(items)} ok",
             flush=True,
         )
-        time.sleep(0.35)
+        time.sleep(0.15)
 
     result = {
         "sheets": sheets,
@@ -341,13 +480,15 @@ def ingest_crm_body(
         "created": created,
         "updated": updated,
         "failed": len(failed),
+        "skipped": skipped,
     }
     print(
         f"CRM ingest: ok | sheets={sheets} | upserted={upserted} | "
-        f"created={created} | updated={updated} | failed={len(failed)}",
+        f"created={created} | updated={updated} | failed={len(failed)} | "
+        f"skipped_same={skipped}",
         flush=True,
     )
-    if failed and upserted == 0:
+    if failed and upserted == 0 and skipped == 0:
         raise SystemExit(f"CRM ingest: все пачки упали ({len(failed)})")
     return result
 
