@@ -15,6 +15,13 @@ DATA_DIR.mkdir(exist_ok=True)
 SESSION_PATH = ROOT / "telegram_session"
 DB_PATH = DATA_DIR / "listings.db"
 EXPORT_PATH = DATA_DIR / "checklist_export.xlsx"
+CRM_EXPORT_PATH = DATA_DIR / "lavok_parser.xlsx"
+
+# Lavok CRM ingest (вместо Google Sheets)
+LAVOK_INGEST_URL = os.getenv(
+    "LAVOK_INGEST_URL", "https://api.bttsrvvrs.org/api/v1/lavok-parser/ingest"
+).strip()
+LAVOK_INGEST_TOKEN = os.getenv("LAVOK_INGEST_TOKEN", "").strip()
 
 # Главный чат продаж
 CHAT_IDS = [

@@ -104,16 +104,18 @@ try {
         exit 0
     }
 
+    $useCrm = $false
     $useApps = $false
     $useSheets = $false
     $envFile = Join-Path $Root ".env"
     if (Test-Path $envFile) {
         $envText = Get-Content $envFile -Raw -ErrorAction SilentlyContinue
-        if ($envText -match "GOOGLE_APPS_SCRIPT_URL=\S+") { $useApps = $true }
-        elseif ($envText -match "GOOGLE_SHEETS_ID=\S+") { $useSheets = $true }
+        if ($envText -match "(?m)^\s*LAVOK_INGEST_TOKEN=\S+") { $useCrm = $true }
+        if ($envText -match "(?m)^\s*GOOGLE_APPS_SCRIPT_URL=\S+") { $useApps = $true }
+        elseif ($envText -match "(?m)^\s*GOOGLE_SHEETS_ID=\S+") { $useSheets = $true }
     }
 
-    Write-Log "START root=$Root apps=$useApps"
+    Write-Log "START root=$Root crm=$useCrm apps=$useApps"
     Set-JobStatus "START" "pid=$PID log=$stamp"
     $code = 0
 
@@ -144,10 +146,11 @@ try {
         Write-Log "zsk-bot exit=$ec - continue to export"
     }
 
-    Set-JobStatus "export" "rescore + excel + sheets"
+    Set-JobStatus "export" "rescore + excel + crm"
     Write-Log "==> rescore + export"
     $cmd = @("run_parser.py", "--rescore", "--export-only")
-    if ($useApps) { $cmd += "--export-apps-script" }
+    if ($useCrm) { $cmd += "--export-crm" }
+    elseif ($useApps) { $cmd += "--export-apps-script" }
     elseif ($useSheets) { $cmd += "--export-gsheets" }
     $ec = Invoke-PyLogged -PyArgs $cmd
     if ($ec -ne 0) { $code = $ec }

@@ -17,6 +17,7 @@ $files = @(
     "parser/export_gsheets.py",
     "parser/export_apps_script.py",
     "parser/export_fingerprint.py",
+    "parser/export_crm.py",
     "deploy/apps_script_sheets.js",
     "deploy/setup_apps_script.ps1",
     "deploy/show_status.ps1",

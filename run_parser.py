@@ -147,8 +147,10 @@ def export_from_db(
     *,
     to_gsheets: bool = False,
     to_apps_script: bool = False,
+    to_crm: bool = False,
 ) -> Path:
     from parser.export_apps_script import build_export_body, export_apps_script
+    from parser.export_crm import ingest_crm, write_crm_xlsx
     from parser.export_fingerprint import (
         fingerprint,
         load_fingerprint,
@@ -165,7 +167,7 @@ def export_from_db(
     if fp and fp == load_fingerprint():
         print(
             f"Экспорт: без изменений (fingerprint={fp[:12]}…) — "
-            f"Excel/Sheets не перезаписываю | уникальных={len(uniq)} | "
+            f"Excel/CRM не перезаписываю | уникальных={len(uniq)} | "
             f"stats={db.stats()}"
         )
         return EXPORT_PATH
@@ -175,7 +177,11 @@ def export_from_db(
         f"Excel: {path} | всего={len(payloads)} | уникальных={len(uniq)} | "
         f"stats={db.stats()}"
     )
-    if to_apps_script:
+
+    crm_path, _, _ = write_crm_xlsx(uniq, skip_duplicates=False)
+    if to_crm:
+        ingest_crm(crm_path)
+    elif to_apps_script:
         export_apps_script(
             uniq, skip_duplicates=False, body=body, skipped=skipped
         )
@@ -183,6 +189,7 @@ def export_from_db(
         from parser.export_gsheets import export_gsheets
 
         export_gsheets(uniq, skip_duplicates=False)
+
     save_fingerprint(fp)
     print(f"Экспорт: обновлено (fingerprint={fp[:12]}…)")
     return path
@@ -265,9 +272,12 @@ async def async_main(args: argparse.Namespace) -> None:
 
     to_sheets = bool(getattr(args, "export_gsheets", False))
     to_apps = bool(getattr(args, "export_apps_script", False))
+    to_crm = bool(getattr(args, "export_crm", False))
 
     if args.export_only and not do_enrich and not args.rescore:
-        export_from_db(db, to_gsheets=to_sheets, to_apps_script=to_apps)
+        export_from_db(
+            db, to_gsheets=to_sheets, to_apps_script=to_apps, to_crm=to_crm
+        )
         db.close()
         return
 
@@ -276,7 +286,9 @@ async def async_main(args: argparse.Namespace) -> None:
             from parser.enrich.pipeline import rescore_db
 
             print("Rescore:", rescore_db(db))
-            export_from_db(db, to_gsheets=to_sheets, to_apps_script=to_apps)
+            export_from_db(
+                db, to_gsheets=to_sheets, to_apps_script=to_apps, to_crm=to_crm
+            )
             if not do_enrich and not args.listen:
                 return
 
@@ -314,7 +326,9 @@ async def async_main(args: argparse.Namespace) -> None:
                 )
             print(f"Обогащение: {result}", flush=True)
 
-        export_from_db(db, to_gsheets=to_sheets, to_apps_script=to_apps)
+        export_from_db(
+            db, to_gsheets=to_sheets, to_apps_script=to_apps, to_crm=to_crm
+        )
 
         if args.listen:
             if client is None:
@@ -354,7 +368,12 @@ def main() -> None:
     ap.add_argument(
         "--export-apps-script",
         action="store_true",
-        help="выгрузка в Sheets через Apps Script (без Cloud; GOOGLE_APPS_SCRIPT_URL)",
+        help="выгрузка в Sheets через Apps Script (устарело; лучше --export-crm)",
+    )
+    ap.add_argument(
+        "--export-crm",
+        action="store_true",
+        help="xlsx → Lavok CRM (LAVOK_INGEST_TOKEN / LAVOK_INGEST_URL)",
     )
     ap.add_argument("--rescore", action="store_true", help="пересчёт M/N/score без сети")
     ap.add_argument("--enrich", action="store_true", help="scrape + все enrich")
