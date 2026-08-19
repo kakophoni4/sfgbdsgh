@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -12,6 +13,8 @@ from config import (
 )
 
 PATHS = {"/lavok/export.xlsx", "/lavok/export.xlsx/"}
+_WRITE_CHUNK = 512
+_RANGE_RE = re.compile(r"bytes=(\d+)-(\d*)$", re.I)
 
 
 def _token_ok(handler: BaseHTTPRequestHandler) -> bool:
@@ -26,17 +29,44 @@ def _token_ok(handler: BaseHTTPRequestHandler) -> bool:
     return True
 
 
+def _parse_range(header: str, size: int) -> tuple[int, int] | None:
+    raw = (header or "").strip()
+    match = _RANGE_RE.match(raw)
+    if not match:
+        return None
+    start = int(match.group(1))
+    end = int(match.group(2)) if match.group(2) else size - 1
+    end = min(end, size - 1)
+    if start > end or start >= size:
+        return None
+    return start, end
+
+
+def _write(handler: BaseHTTPRequestHandler, payload: bytes) -> None:
+    view = memoryview(payload)
+    offset = 0
+    while offset < len(view):
+        handler.wfile.write(view[offset : offset + _WRITE_CHUNK])
+        handler.wfile.flush()
+        offset += _WRITE_CHUNK
+
+
 class ExportHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
     def log_message(self, fmt: str, *args: object) -> None:
         print(f"lavok-export: {self.address_string()} {fmt % args}", flush=True)
 
     def do_GET(self) -> None:  # noqa: N802
         path = (self.path or "/").split("?", 1)[0]
         if path == "/healthz":
+            body = b"ok"
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
             self.end_headers()
-            self.wfile.write(b"ok")
+            self.wfile.write(body)
             return
         if path not in PATHS:
             self.send_error(404, "Not found")
@@ -53,18 +83,32 @@ class ExportHandler(BaseHTTPRequestHandler):
         if inm and inm == etag:
             self.send_response(304)
             self.send_header("ETag", f'"{etag}"')
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Connection", "close")
             self.end_headers()
             return
-        self.send_response(200)
+
+        parsed = _parse_range(self.headers.get("Range") or "", len(data))
+        if parsed is None:
+            start, end = 0, len(data) - 1
+            status = 200
+        else:
+            start, end = parsed
+            status = 206
+        blob = data[start : end + 1]
+        self.send_response(status)
         self.send_header(
             "Content-Type",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         self.send_header("Content-Disposition", 'attachment; filename="lavok_parser.xlsx"')
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
+        self.send_header("Content-Length", str(len(blob)))
         self.send_header("ETag", f'"{etag}"')
+        self.send_header("Connection", "close")
         self.end_headers()
-        self.wfile.write(data)
+        _write(self, blob)
 
 
 def main() -> None:

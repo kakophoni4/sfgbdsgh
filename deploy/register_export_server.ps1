@@ -62,6 +62,11 @@ $ruleName = "Lavok export $port"
 try { netsh advfirewall firewall delete rule name="$ruleName" | Out-Null } catch {}
 netsh advfirewall firewall add rule name="$ruleName" dir=in action=allow protocol=TCP localport=$port remoteip=$crmIp | Out-Null
 
+# Large Send Offload: 200KB body never leaves the NIC (CRM sees headers, 0 body)
+Get-NetAdapter | Where-Object { $_.Status -eq "Up" } | ForEach-Object {
+    try { Disable-NetAdapterLso -Name $_.Name -Confirm:$false -ErrorAction Stop; Write-Host ("  LSO off: " + $_.Name) } catch {}
+}
+
 Start-ScheduledTask -TaskName $taskName
 Start-Sleep -Seconds 2
 
