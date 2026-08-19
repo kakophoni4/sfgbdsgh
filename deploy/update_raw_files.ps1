@@ -1,6 +1,13 @@
 # FAST update: download code via GitHub commit SHA (не кэш /main).
 #
 #   powershell -ExecutionPolicy Bypass -File deploy\update_raw_files.ps1
+#
+# Сначала обновляет сам себя и перезапускается — иначе новые файлы
+# из свежего списка не скачиваются (старый .ps1 крутит старый $files).
+
+param(
+    [switch]$Reloaded
+)
 
 $ErrorActionPreference = "Stop"
 $Root = "C:\firmy"
@@ -51,51 +58,103 @@ $files = @(
     "tools/cleanup_bad_egrul.py"
 )
 
-if (-not (Test-Path $Root)) { throw "Missing $Root" }
-Set-Location $Root
+# Без этих файлов экспорт/парсер ломается — SKIP недопустим
+$required = @(
+    "run_parser.py",
+    "config.py",
+    "parser/export_crm.py",
+    "parser/export_fingerprint.py",
+    "parser/export_apps_script.py",
+    "parser/export_excel.py",
+    "deploy/run_job.ps1"
+)
 
-# Актуальный SHA main — raw по /main часто кэшируется со старым содержимым
-$shaResp = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/commits/main" -Headers @{
-    "User-Agent" = "firmy-updater"
-    "Accept"     = "application/vnd.github+json"
+function Get-MainSha {
+    $shaResp = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/commits/main" -Headers @{
+        "User-Agent" = "firmy-updater"
+        "Accept"     = "application/vnd.github+json"
+    }
+    $s = [string]$shaResp.sha
+    if (-not $s -or $s.Length -lt 7) { throw "Cannot resolve main SHA from GitHub API" }
+    return $s
 }
-$sha = [string]$shaResp.sha
-if (-not $sha -or $sha.Length -lt 7) { throw "Cannot resolve main SHA from GitHub API" }
-Write-Host "main SHA: $sha"
 
-$Base = "https://raw.githubusercontent.com/$Repo/$sha"
-$n = 0
-foreach ($rel in $files) {
-    $url = "$Base/$rel"
-    $out = Join-Path $Root ($rel -replace "/", "\")
+function Save-RemoteFile {
+    param(
+        [string]$Sha,
+        [string]$Rel
+    )
+    $Base = "https://raw.githubusercontent.com/$Repo/$Sha"
+    $url = "$Base/$Rel"
+    $out = Join-Path $Root ($Rel -replace "/", "\")
     $dir = Split-Path $out -Parent
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     try {
         Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing -TimeoutSec 60 -Headers @{
             "User-Agent" = "firmy-updater"
         }
-        # PowerShell 5.1 needs UTF-8 BOM for .ps1 with non-ASCII, else parser breaks
-        if ($rel -like "*.ps1") {
-            $txt = [System.IO.File]::ReadAllText($out)
-            $utf8Bom = New-Object System.Text.UTF8Encoding $true
-            [System.IO.File]::WriteAllText($out, $txt, $utf8Bom)
-        }
+    } catch {
+        $alt = "https://cdn.jsdelivr.net/gh/$Repo@$Sha/$Rel"
+        Invoke-WebRequest -Uri $alt -OutFile $out -UseBasicParsing -TimeoutSec 60
+    }
+    if ($Rel -like "*.ps1") {
+        $txt = [System.IO.File]::ReadAllText($out)
+        $utf8Bom = New-Object System.Text.UTF8Encoding $true
+        [System.IO.File]::WriteAllText($out, $txt, $utf8Bom)
+    }
+    return $out
+}
+
+if (-not (Test-Path $Root)) { throw "Missing $Root" }
+Set-Location $Root
+
+$sha = Get-MainSha
+Write-Host "main SHA: $sha"
+
+# 1) сначала сам updater → перезапуск со свежим списком файлов
+$selfRel = "deploy/update_raw_files.ps1"
+$selfPath = Join-Path $Root ($selfRel -replace "/", "\")
+$beforeHash = ""
+if (Test-Path $selfPath) {
+    $beforeHash = (Get-FileHash -Path $selfPath -Algorithm SHA256).Hash
+}
+Save-RemoteFile -Sha $sha -Rel $selfRel | Out-Null
+$afterHash = (Get-FileHash -Path $selfPath -Algorithm SHA256).Hash
+Write-Host ("OK " + $selfRel + " (bootstrap)")
+
+if (-not $Reloaded -and $beforeHash -and ($beforeHash -ne $afterHash)) {
+    Write-Host "Updater changed — reloading with fresh file list..."
+    $argList = @(
+        "-ExecutionPolicy", "Bypass",
+        "-File", $selfPath,
+        "-Reloaded"
+    )
+    $p = Start-Process -FilePath "powershell.exe" -ArgumentList $argList -Wait -PassThru -NoNewWindow
+    exit $p.ExitCode
+}
+
+$n = 0
+$failedRequired = @()
+foreach ($rel in $files) {
+    if ($rel -eq $selfRel) {
+        # уже скачан выше
+        $n++
+        continue
+    }
+    try {
+        Save-RemoteFile -Sha $sha -Rel $rel | Out-Null
         $n++
         Write-Host ("OK " + $rel)
     } catch {
-        try {
-            $alt = "https://cdn.jsdelivr.net/gh/$Repo@$sha/$rel"
-            Invoke-WebRequest -Uri $alt -OutFile $out -UseBasicParsing -TimeoutSec 60
-            if ($rel -like "*.ps1") {
-                $txt = [System.IO.File]::ReadAllText($out)
-                $utf8Bom = New-Object System.Text.UTF8Encoding $true
-                [System.IO.File]::WriteAllText($out, $txt, $utf8Bom)
-            }
-            $n++
-            Write-Host ("OK(jsdelivr) " + $rel)
-        } catch {
-            Write-Host ("SKIP " + $rel + " :: " + $_.Exception.Message)
+        $msg = $_.Exception.Message
+        Write-Host ("SKIP " + $rel + " :: " + $msg)
+        if ($required -contains $rel) {
+            $failedRequired += $rel
         }
     }
 }
+
 Write-Host ("Done: $n files from $sha. No data/venv touched.")
+if ($failedRequired.Count -gt 0) {
+    throw ("Required files failed: " + ($failedRequired -join ", "))
+}
