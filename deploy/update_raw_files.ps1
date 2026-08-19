@@ -1,9 +1,8 @@
-# FAST update: download code via GitHub commit SHA (не кэш /main).
+# FAST update: download code via GitHub commit SHA (no /main cache).
 #
 #   powershell -ExecutionPolicy Bypass -File deploy\update_raw_files.ps1
 #
-# Сначала обновляет сам себя и перезапускается — иначе новые файлы
-# из свежего списка не скачиваются (старый .ps1 крутит старый $files).
+# Bootstraps itself first and reloads, so new files in $files are fetched.
 
 param(
     [switch]$Reloaded
@@ -28,7 +27,6 @@ $files = @(
     "deploy/apps_script_sheets.js",
     "deploy/setup_apps_script.ps1",
     "deploy/show_status.ps1",
-
     "parser/scrape.py",
     "parser/dedup.py",
     "parser/db.py",
@@ -58,7 +56,6 @@ $files = @(
     "tools/cleanup_bad_egrul.py"
 )
 
-# Без этих файлов экспорт/парсер ломается — SKIP недопустим
 $required = @(
     "run_parser.py",
     "config.py",
@@ -70,7 +67,7 @@ $required = @(
 )
 
 function Get-MainSha {
-    $shaResp = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/commits/main" -Headers @{
+    $shaResp = Invoke-RestMethod -Uri ("https://api.github.com/repos/" + $Repo + "/commits/main") -Headers @{
         "User-Agent" = "firmy-updater"
         "Accept"     = "application/vnd.github+json"
     }
@@ -84,8 +81,7 @@ function Save-RemoteFile {
         [string]$Sha,
         [string]$Rel
     )
-    $Base = "https://raw.githubusercontent.com/$Repo/$Sha"
-    $url = "$Base/$Rel"
+    $url = "https://raw.githubusercontent.com/$Repo/$Sha/$Rel"
     $out = Join-Path $Root ($Rel -replace "/", "\")
     $dir = Split-Path $out -Parent
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
@@ -109,21 +105,20 @@ if (-not (Test-Path $Root)) { throw "Missing $Root" }
 Set-Location $Root
 
 $sha = Get-MainSha
-Write-Host "main SHA: $sha"
+Write-Host ("main SHA: " + $sha)
 
-# 1) сначала сам updater → перезапуск со свежим списком файлов
 $selfRel = "deploy/update_raw_files.ps1"
 $selfPath = Join-Path $Root ($selfRel -replace "/", "\")
 $beforeHash = ""
 if (Test-Path $selfPath) {
     $beforeHash = (Get-FileHash -Path $selfPath -Algorithm SHA256).Hash
 }
-Save-RemoteFile -Sha $sha -Rel $selfRel | Out-Null
+[void](Save-RemoteFile -Sha $sha -Rel $selfRel)
 $afterHash = (Get-FileHash -Path $selfPath -Algorithm SHA256).Hash
 Write-Host ("OK " + $selfRel + " (bootstrap)")
 
 if (-not $Reloaded -and $beforeHash -and ($beforeHash -ne $afterHash)) {
-    Write-Host "Updater changed — reloading with fresh file list..."
+    Write-Host "Updater changed - reloading with fresh file list..."
     $argList = @(
         "-ExecutionPolicy", "Bypass",
         "-File", $selfPath,
@@ -134,27 +129,26 @@ if (-not $Reloaded -and $beforeHash -and ($beforeHash -ne $afterHash)) {
 }
 
 $n = 0
-$failedRequired = @()
+$failedRequired = New-Object System.Collections.Generic.List[string]
 foreach ($rel in $files) {
     if ($rel -eq $selfRel) {
-        # уже скачан выше
         $n++
         continue
     }
     try {
-        Save-RemoteFile -Sha $sha -Rel $rel | Out-Null
+        [void](Save-RemoteFile -Sha $sha -Rel $rel)
         $n++
         Write-Host ("OK " + $rel)
     } catch {
         $msg = $_.Exception.Message
         Write-Host ("SKIP " + $rel + " :: " + $msg)
         if ($required -contains $rel) {
-            $failedRequired += $rel
+            $failedRequired.Add($rel) | Out-Null
         }
     }
 }
 
-Write-Host ("Done: $n files from $sha. No data/venv touched.")
+Write-Host ("Done: " + $n + " files from " + $sha + ". No data/venv touched.")
 if ($failedRequired.Count -gt 0) {
     throw ("Required files failed: " + ($failedRequired -join ", "))
 }
