@@ -157,10 +157,13 @@ def export_from_db(
         save_fingerprint,
     )
 
+    print("Экспорт: читаю базу…", flush=True)
     payloads = mark_duplicates(db.all_payloads())
-    for p in payloads:
-        db.save_payload(p)
-    uniq = unique_only(payloads)
+    uniq = [p for p in payloads if not p.get("is_duplicate")]
+    print(
+        f"Экспорт: лотов={len(payloads)} уникальных={len(uniq)} — собираю таблицу…",
+        flush=True,
+    )
 
     body, skipped = build_export_body(uniq, skip_duplicates=False)
     fp = fingerprint(body)
@@ -172,14 +175,21 @@ def export_from_db(
         )
         return EXPORT_PATH
 
+    # аннотации дублей — одним commit, не 2000 fsync
+    print("Экспорт: сохраняю аннотации в БД (batch)…", flush=True)
+    db.save_payloads(payloads)
+
+    print("Экспорт: пишу Excel…", flush=True)
     path = export_xlsx(uniq, EXPORT_PATH, skip_duplicates=False)
     print(
         f"Excel: {path} | всего={len(payloads)} | уникальных={len(uniq)} | "
         f"stats={db.stats()}"
     )
 
+    print("Экспорт: пишу CRM xlsx…", flush=True)
     crm_path, _, _ = write_crm_xlsx(uniq, skip_duplicates=False)
     if to_crm:
+        print("Экспорт: заливка в Lavok CRM…", flush=True)
         ingest_crm(crm_path)
     elif to_apps_script:
         export_apps_script(
@@ -191,7 +201,7 @@ def export_from_db(
         export_gsheets(uniq, skip_duplicates=False)
 
     save_fingerprint(fp)
-    print(f"Экспорт: обновлено (fingerprint={fp[:12]}…)")
+    print(f"Экспорт: обновлено (fingerprint={fp[:12]}…)", flush=True)
     return path
 
 

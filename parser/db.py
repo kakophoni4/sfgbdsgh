@@ -53,11 +53,23 @@ class ListingDB:
 
         self._write_row(payload, scored)
 
-    def save_payload(self, payload: dict[str, Any]) -> None:
+    def save_payload(self, payload: dict[str, Any], *, commit: bool = True) -> None:
         scored = payload.get("scoring") or {}
-        self._write_row(payload, scored)
+        self._write_row(payload, scored, commit=commit)
 
-    def _write_row(self, payload: dict[str, Any], scored: dict[str, Any]) -> None:
+    def save_payloads(self, payloads: list[dict[str, Any]]) -> None:
+        """Пакетная запись — один commit на всё (экспорт не должен тормозить)."""
+        for p in payloads:
+            self.save_payload(p, commit=False)
+        self.conn.commit()
+
+    def _write_row(
+        self,
+        payload: dict[str, Any],
+        scored: dict[str, Any],
+        *,
+        commit: bool = True,
+    ) -> None:
         self.conn.execute(
             """
             INSERT INTO listings (
@@ -87,7 +99,8 @@ class ListingDB:
                 scored.get("verdict"),
             ),
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
 
     def get_payload(
         self, chat_id: int, message_id: int, block_index: int
