@@ -1,14 +1,17 @@
-"""Выгрузка компактного xlsx в CRM Lavok (вместо Google Sheets).
+"""Выгрузка в CRM Lavok: локальный xlsx + JSON-пачки по HTTP/1.1 без прокси.
 
-POST multipart field=file, header X-Lavok-Ingest-Token.
-Листы = ДД.ММ.ГГГГ, шапка как у онлайн-таблицы.
+xlsx целиком с Windows рвёт TCP (10054). JSON по несколько строк — нет.
 """
 from __future__ import annotations
 
+import json
+import ssl
+import time
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import ProxyHandler, Request, build_opener, HTTPSHandler
 
-import requests
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
@@ -25,6 +28,66 @@ CRM_HEADERS = [h.replace("Отчётность", "Отчетность") for h i
 
 INN_COL = CRM_HEADERS.index("ИНН") + 1  # 1-based
 SCORE_COL = CRM_HEADERS.index("Балл") + 1
+
+HEADER_TO_FIELD = {
+    "Источник": "source",
+    "Название": "name",
+    "ИНН": "inn",
+    "Цена": "price",
+    "Дата регистрации": "registered_at",
+    "Налог": "tax",
+    "Адрес и директор": "address_director",
+    "Суды": "courts",
+    "Долги / ИЛ": "debts",
+    "Достоверность ЕГРЮЛ": "egrul_reliability",
+    "Банкротство": "bankruptcy",
+    "Обороты": "turnover",
+    "Отчетность": "reporting",
+    "Отчётность": "reporting",
+    "Лизинг / залоги": "leasing",
+    "ЗСК": "zsk",
+    "Итог": "summary",
+    "Балл": "score",
+    "Первое появление": "first_seen",
+    "Продавец": "seller",
+    "Ссылка": "link",
+    "Companium": "companium",
+    "Статус ЕГРЮЛ": "egrul_status",
+}
+
+BATCH_SIZE = 5
+
+
+def json_ingest_url(xlsx_url: str) -> str:
+    url = (xlsx_url or "").strip().rstrip("/")
+    if url.endswith("/ingest"):
+        return f"{url}/json"
+    if url.endswith("/ingest/json") or url.endswith("/ingest-json"):
+        return url
+    return f"{url}/ingest/json"
+
+
+def items_from_body(body: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for spec in body.get("sheets") or []:
+        sheet_date = str(spec.get("name") or "").strip()
+        for row in spec.get("rows") or []:
+            rec: dict[str, Any] = {"sheet_date": sheet_date}
+            values = list(row or [])
+            for idx, header in enumerate(CRM_HEADERS):
+                field = HEADER_TO_FIELD.get(header)
+                if not field or idx >= len(values):
+                    continue
+                val = values[idx]
+                if val is None:
+                    continue
+                text = str(val).strip()
+                if not text:
+                    continue
+                rec[field] = text
+            if rec.get("inn"):
+                items.append(rec)
+    return items
 
 
 def write_crm_xlsx(
@@ -104,6 +167,138 @@ def write_crm_xlsx(
     return path, body, skipped
 
 
+def _ssl_ctx() -> ssl.SSLContext:
+    ctx = ssl.create_default_context()
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+    ctx.set_alpn_protocols(["http/1.1"])
+    return ctx
+
+
+def _opener():
+    # Пустой ProxyHandler: не ходить в CRM через системный/asocks прокси.
+    return build_opener(ProxyHandler({}), HTTPSHandler(context=_ssl_ctx()))
+
+
+def _post_json(url: str, token: str, payload: dict[str, Any], timeout: int = 90) -> dict[str, Any]:
+    raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = Request(url, data=raw, method="POST")
+    req.add_header("Content-Type", "application/json; charset=utf-8")
+    req.add_header("X-Lavok-Ingest-Token", token)
+    req.add_header("Accept", "application/json")
+    req.add_header("Connection", "close")
+    req.add_header("User-Agent", "firmy-lavok-parser/1.1")
+    try:
+        with _opener().open(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            status = getattr(resp, "status", 200)
+    except HTTPError as exc:
+        err_body = exc.read().decode("utf-8", errors="replace")
+        try:
+            data = json.loads(err_body) if err_body else {}
+        except Exception:
+            data = {"raw": err_body[:800]}
+        raise RuntimeError(f"HTTP {exc.code}: {data}") from exc
+    except URLError as exc:
+        raise RuntimeError(str(exc.reason or exc)) from exc
+    try:
+        data = json.loads(body) if body else {}
+    except Exception:
+        data = {"raw": body[:800]}
+    if status >= 400:
+        raise RuntimeError(f"HTTP {status}: {data}")
+    return data if isinstance(data, dict) else {"ok": True, "data": data}
+
+
+def _post_batch(url: str, token: str, batch: list[dict[str, Any]], retries: int = 4) -> dict[str, Any]:
+    last_err: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            return _post_json(url, token, {"items": batch})
+        except Exception as exc:
+            last_err = exc
+            wait = min(20, 2 ** attempt)
+            print(
+                f"CRM ingest: fail {len(batch)} rows attempt {attempt}/{retries}: {exc} — sleep {wait}s",
+                flush=True,
+            )
+            if attempt < retries:
+                time.sleep(wait)
+    raise RuntimeError(last_err)
+
+
+def ingest_crm_body(
+    body: dict[str, Any],
+    *,
+    token: str | None = None,
+    url: str | None = None,
+) -> dict[str, Any]:
+    xlsx_url = (url if url is not None else LAVOK_INGEST_URL).strip()
+    token = (token if token is not None else LAVOK_INGEST_TOKEN).strip()
+    if not xlsx_url:
+        raise SystemExit("В .env нет LAVOK_INGEST_URL")
+    if not token:
+        raise SystemExit("В .env нет LAVOK_INGEST_TOKEN")
+
+    endpoint = json_ingest_url(xlsx_url)
+    items = items_from_body(body)
+    if not items:
+        print("CRM ingest: нечего слать (0 строк с ИНН)", flush=True)
+        return {"sheets": 0, "upserted": 0, "created": 0, "updated": 0}
+
+    print(
+        f"CRM ingest: POST {endpoint} | rows={len(items)} | batch={BATCH_SIZE} | no-proxy HTTP/1.1",
+        flush=True,
+    )
+    created = 0
+    updated = 0
+    upserted = 0
+    sheets = 0
+    for offset in range(0, len(items), BATCH_SIZE):
+        chunk = items[offset : offset + BATCH_SIZE]
+        try:
+            data = _post_batch(endpoint, token, chunk)
+        except Exception:
+            if len(chunk) > 1:
+                print(f"CRM ingest: дроблю пачку {len(chunk)} → по 1", flush=True)
+                data = {"created": 0, "updated": 0, "upserted": 0, "sheets": 0}
+                for one in chunk:
+                    try:
+                        part = _post_batch(endpoint, token, [one])
+                    except Exception as exc:
+                        raise SystemExit(
+                            f"CRM ingest failed inn={one.get('inn')}: {exc}"
+                        ) from exc
+                    created += int(part.get("created") or 0)
+                    updated += int(part.get("updated") or 0)
+                    upserted += int(part.get("upserted") or 0)
+                    sheets = max(sheets, int(part.get("sheets") or 0))
+                continue
+            raise SystemExit(f"CRM ingest failed: last batch {chunk[0].get('inn')}")
+        created += int(data.get("created") or 0)
+        updated += int(data.get("updated") or 0)
+        upserted += int(data.get("upserted") or 0)
+        sheets = max(sheets, int(data.get("sheets") or 0))
+        print(
+            f"CRM ingest: batch {offset + 1}-{offset + len(chunk)}/{len(items)} ok",
+            flush=True,
+        )
+        time.sleep(0.2)
+
+    result = {
+        "sheets": sheets,
+        "upserted": upserted,
+        "created": created,
+        "updated": updated,
+    }
+    print(
+        f"CRM ingest: ok | sheets={sheets} | upserted={upserted} | "
+        f"created={created} | updated={updated}",
+        flush=True,
+    )
+    return result
+
+
 def ingest_crm(
     path: Path,
     *,
@@ -111,81 +306,11 @@ def ingest_crm(
     url: str | None = None,
     retries: int = 4,
 ) -> dict[str, Any]:
-    """POST .xlsx в Lavok ingest (с ретраями при обрыве связи)."""
-    import time
-
-    url = (url if url is not None else LAVOK_INGEST_URL).strip()
-    token = (token if token is not None else LAVOK_INGEST_TOKEN).strip()
-    if not url:
-        raise SystemExit("В .env нет LAVOK_INGEST_URL")
-    if not token:
-        raise SystemExit("В .env нет LAVOK_INGEST_TOKEN")
-    path = Path(path)
-    if not path.is_file():
-        raise SystemExit(f"Нет файла для CRM: {path}")
-    if path.suffix.lower() != ".xlsx":
-        raise SystemExit(f"CRM принимает только .xlsx, не {path.suffix}")
-
-    size_kb = path.stat().st_size / 1024
-    print(
-        f"CRM ingest: POST {url} | file={path.name} | size={size_kb:.1f} KB | "
-        f"retries={retries}",
-        flush=True,
+    """Совместимость: из xlsx больше не шлём. Берём body заново нельзя — нужен JSON."""
+    raise SystemExit(
+        "xlsx POST в CRM отключён (connection reset). "
+        "Используй ingest_crm_body() / --export-crm"
     )
-    raw = path.read_bytes()
-    headers = {
-        "X-Lavok-Ingest-Token": token,
-        "User-Agent": "firmy-lavok-parser/1.0",
-        "Accept": "application/json",
-    }
-    last_err: Exception | None = None
-    for attempt in range(1, retries + 1):
-        try:
-            resp = requests.post(
-                url,
-                headers=headers,
-                files={
-                    "file": (
-                        path.name,
-                        raw,
-                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    )
-                },
-                timeout=(30, 300),
-            )
-            text = resp.text or ""
-            try:
-                data = resp.json()
-            except Exception:
-                data = {"raw": text[:800]}
-
-            if resp.status_code >= 500 or resp.status_code in {408, 429}:
-                raise RuntimeError(f"HTTP {resp.status_code}: {data}")
-
-            if resp.status_code >= 400:
-                raise SystemExit(f"CRM ingest HTTP {resp.status_code}: {data}")
-
-            print(
-                f"CRM ingest: ok | sheets={data.get('sheets')} | "
-                f"upserted={data.get('upserted')} | created={data.get('created')} | "
-                f"updated={data.get('updated')} | file={path.name} | "
-                f"attempt={attempt}",
-                flush=True,
-            )
-            return data if isinstance(data, dict) else {"ok": True, "data": data}
-        except SystemExit:
-            raise
-        except Exception as e:
-            last_err = e
-            wait = min(30, 2 ** attempt)
-            print(
-                f"CRM ingest: fail attempt {attempt}/{retries}: {e} — sleep {wait}s",
-                flush=True,
-            )
-            if attempt < retries:
-                time.sleep(wait)
-
-    raise SystemExit(f"CRM ingest failed after {retries} attempts: {last_err}")
 
 
 def export_and_ingest_crm(
@@ -195,9 +320,9 @@ def export_and_ingest_crm(
     path: Path | None = None,
     upload: bool = True,
 ) -> Path:
-    out, _body, _skipped = write_crm_xlsx(
+    out, body, _skipped = write_crm_xlsx(
         payloads, path=path, skip_duplicates=skip_duplicates
     )
     if upload:
-        ingest_crm(out)
+        ingest_crm_body(body)
     return out
