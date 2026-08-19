@@ -169,12 +169,21 @@ def export_from_db(
     fp = fingerprint(body)
     unchanged = bool(fp and fp == load_fingerprint())
     if unchanged:
+        from config import CRM_EXPORT_PATH
+
+        from pathlib import Path as _Path
+
+        if not (to_crm and not _Path(CRM_EXPORT_PATH).is_file()):
+            print(
+                f"Экспорт: без изменений (fingerprint={fp[:12]}…) — "
+                f"Excel не перезаписываю, CRM сама заберёт xlsx | "
+                f"уникальных={len(uniq)} | stats={db.stats()}"
+            )
+            return EXPORT_PATH
         print(
-            f"Экспорт: без изменений (fingerprint={fp[:12]}…) — "
-            f"Excel не перезаписываю, CRM сама заберёт xlsx | "
-            f"уникальных={len(uniq)} | stats={db.stats()}"
+            "Экспорт: fingerprint тот же, но CRM xlsx нет — пересоздаю…",
+            flush=True,
         )
-        return EXPORT_PATH
 
     print("Экспорт: сохраняю аннотации в БД (batch)…", flush=True)
     db.save_payloads(payloads)
