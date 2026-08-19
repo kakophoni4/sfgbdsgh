@@ -92,7 +92,7 @@ try {
     Write-Host ("  healthz: FAIL — check task/logs: " + $_.Exception.Message)
 }
 
-# Range smoke: expect 206 + 1024 bytes
+# Range smoke: expect 206 + 1024 bytes (use curl — PS blocks Range header)
 $token = ""
 $envFile = Join-Path $Root ".env"
 if (Test-Path $envFile) {
@@ -100,16 +100,29 @@ if (Test-Path $envFile) {
     if ($m) { $token = $m.Matches[0].Groups[1].Value.Trim() }
 }
 if ($token) {
+    $tmpOut = Join-Path $env:TEMP "lavok_range_smoke.bin"
+    $tmpHdr = Join-Path $env:TEMP "lavok_range_smoke.hdr"
     try {
-        $headers = @{
-            "X-Lavok-Ingest-Token" = $token
-            "Range" = "bytes=0-1023"
+        $null = & curl.exe -sS -D $tmpHdr -o $tmpOut `
+            -H ("X-Lavok-Ingest-Token: " + $token) `
+            -H "Range: bytes=0-1023" `
+            ("http://127.0.0.1:{0}/lavok/export.xlsx" -f $port) `
+            --connect-timeout 10 --max-time 20
+        $status = 0
+        if (Test-Path $tmpHdr) {
+            $first = Get-Content $tmpHdr -TotalCount 1
+            if ($first -match "HTTP/\S+\s+(\d+)") { $status = [int]$Matches[1] }
         }
-        $r = Invoke-WebRequest -Uri ("http://127.0.0.1:{0}/lavok/export.xlsx" -f $port) -Headers $headers -UseBasicParsing -TimeoutSec 15
-        $len = if ($null -eq $r.Content) { 0 } elseif ($r.Content -is [byte[]]) { $r.Content.Length } else { [System.Text.Encoding]::UTF8.GetByteCount([string]$r.Content) }
-        Write-Host ("  range:   HTTP {0}, body={1} bytes (expect 206 / 1024)" -f $r.StatusCode, $len)
+        $len = 0
+        if (Test-Path $tmpOut) { $len = (Get-Item $tmpOut).Length }
+        Write-Host ("  range:   HTTP {0}, body={1} bytes (expect 206 / 1024)" -f $status, $len)
+        if ($status -eq 206 -and $len -eq 1024) {
+            Write-Host "  range:   OK"
+        }
     } catch {
         Write-Host ("  range:   FAIL — " + $_.Exception.Message)
+    } finally {
+        Remove-Item $tmpOut, $tmpHdr -Force -ErrorAction SilentlyContinue
     }
 } else {
     Write-Host "  range:   skipped (no LAVOK_INGEST_TOKEN in .env)"
