@@ -104,8 +104,16 @@ def write_crm_xlsx(
     return path, body, skipped
 
 
-def ingest_crm(path: Path, *, token: str | None = None, url: str | None = None) -> dict[str, Any]:
-    """POST .xlsx в Lavok ingest."""
+def ingest_crm(
+    path: Path,
+    *,
+    token: str | None = None,
+    url: str | None = None,
+    retries: int = 4,
+) -> dict[str, Any]:
+    """POST .xlsx в Lavok ingest (с ретраями при обрыве связи)."""
+    import time
+
     url = (url if url is not None else LAVOK_INGEST_URL).strip()
     token = (token if token is not None else LAVOK_INGEST_TOKEN).strip()
     if not url:
@@ -118,34 +126,66 @@ def ingest_crm(path: Path, *, token: str | None = None, url: str | None = None) 
     if path.suffix.lower() != ".xlsx":
         raise SystemExit(f"CRM принимает только .xlsx, не {path.suffix}")
 
-    with path.open("rb") as f:
-        resp = requests.post(
-            url,
-            headers={"X-Lavok-Ingest-Token": token},
-            files={
-                "file": (
-                    path.name,
-                    f,
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
-            },
-            timeout=180,
-        )
-    text = resp.text or ""
-    try:
-        data = resp.json()
-    except Exception:
-        data = {"raw": text[:500]}
-
-    if resp.status_code >= 400:
-        raise SystemExit(f"CRM ingest HTTP {resp.status_code}: {data}")
-
+    size_kb = path.stat().st_size / 1024
     print(
-        f"CRM ingest: ok | sheets={data.get('sheets')} | "
-        f"upserted={data.get('upserted')} | created={data.get('created')} | "
-        f"updated={data.get('updated')} | file={path.name}"
+        f"CRM ingest: POST {url} | file={path.name} | size={size_kb:.1f} KB | "
+        f"retries={retries}",
+        flush=True,
     )
-    return data if isinstance(data, dict) else {"ok": True, "data": data}
+    raw = path.read_bytes()
+    headers = {
+        "X-Lavok-Ingest-Token": token,
+        "User-Agent": "firmy-lavok-parser/1.0",
+        "Accept": "application/json",
+    }
+    last_err: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            resp = requests.post(
+                url,
+                headers=headers,
+                files={
+                    "file": (
+                        path.name,
+                        raw,
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+                },
+                timeout=(30, 300),
+            )
+            text = resp.text or ""
+            try:
+                data = resp.json()
+            except Exception:
+                data = {"raw": text[:800]}
+
+            if resp.status_code >= 500 or resp.status_code in {408, 429}:
+                raise RuntimeError(f"HTTP {resp.status_code}: {data}")
+
+            if resp.status_code >= 400:
+                raise SystemExit(f"CRM ingest HTTP {resp.status_code}: {data}")
+
+            print(
+                f"CRM ingest: ok | sheets={data.get('sheets')} | "
+                f"upserted={data.get('upserted')} | created={data.get('created')} | "
+                f"updated={data.get('updated')} | file={path.name} | "
+                f"attempt={attempt}",
+                flush=True,
+            )
+            return data if isinstance(data, dict) else {"ok": True, "data": data}
+        except SystemExit:
+            raise
+        except Exception as e:
+            last_err = e
+            wait = min(30, 2 ** attempt)
+            print(
+                f"CRM ingest: fail attempt {attempt}/{retries}: {e} — sleep {wait}s",
+                flush=True,
+            )
+            if attempt < retries:
+                time.sleep(wait)
+
+    raise SystemExit(f"CRM ingest failed after {retries} attempts: {last_err}")
 
 
 def export_and_ingest_crm(
