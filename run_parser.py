@@ -150,7 +150,7 @@ def export_from_db(
     to_crm: bool = False,
 ) -> Path:
     from parser.export_apps_script import build_export_body, export_apps_script
-    from parser.export_crm import ingest_crm_body, write_crm_xlsx
+    from parser.export_crm import write_crm_xlsx
     from parser.export_fingerprint import (
         fingerprint,
         load_fingerprint,
@@ -168,38 +168,27 @@ def export_from_db(
     body, skipped = build_export_body(uniq, skip_duplicates=False)
     fp = fingerprint(body)
     unchanged = bool(fp and fp == load_fingerprint())
-    if unchanged and not to_crm:
+    if unchanged:
         print(
             f"Экспорт: без изменений (fingerprint={fp[:12]}…) — "
-            f"Excel/CRM не перезаписываю | уникальных={len(uniq)} | "
-            f"stats={db.stats()}"
+            f"Excel не перезаписываю, CRM сама заберёт xlsx | "
+            f"уникальных={len(uniq)} | stats={db.stats()}"
         )
         return EXPORT_PATH
 
-    if not unchanged:
-        print("Экспорт: сохраняю аннотации в БД (batch)…", flush=True)
-        db.save_payloads(payloads)
+    print("Экспорт: сохраняю аннотации в БД (batch)…", flush=True)
+    db.save_payloads(payloads)
 
-        print("Экспорт: пишу Excel…", flush=True)
-        path = export_xlsx(uniq, EXPORT_PATH, skip_duplicates=False)
-        print(
-            f"Excel: {path} | всего={len(payloads)} | уникальных={len(uniq)} | "
-            f"stats={db.stats()}"
-        )
-
-        print("Экспорт: пишу CRM xlsx…", flush=True)
-        write_crm_xlsx(uniq, skip_duplicates=False)
-    else:
-        print(
-            f"Экспорт: таблица без изменений — повторная заливка в CRM "
-            f"(fingerprint={fp[:12]}…)",
-            flush=True,
-        )
-        path = EXPORT_PATH
+    print("Экспорт: пишу Excel…", flush=True)
+    path = export_xlsx(uniq, EXPORT_PATH, skip_duplicates=False)
+    print(
+        f"Excel: {path} | всего={len(payloads)} | уникальных={len(uniq)} | "
+        f"stats={db.stats()}"
+    )
 
     if to_crm:
-        print("Экспорт: заливка в Lavok CRM…", flush=True)
-        ingest_crm_body(body)
+        print("Экспорт: пишу CRM xlsx (CRM заберёт сама)…", flush=True)
+        write_crm_xlsx(uniq, skip_duplicates=False)
     elif to_apps_script:
         export_apps_script(
             uniq, skip_duplicates=False, body=body, skipped=skipped
@@ -393,7 +382,7 @@ def main() -> None:
     ap.add_argument(
         "--export-crm",
         action="store_true",
-        help="xlsx → Lavok CRM (LAVOK_INGEST_TOKEN / LAVOK_INGEST_URL)",
+        help="локальный xlsx для CRM pull (LAVOK_INGEST_TOKEN на раздаче :8788)",
     )
     ap.add_argument("--rescore", action="store_true", help="пересчёт M/N/score без сети")
     ap.add_argument("--enrich", action="store_true", help="scrape + все enrich")

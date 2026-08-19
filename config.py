@@ -22,6 +22,8 @@ LAVOK_INGEST_URL = os.getenv(
     "LAVOK_INGEST_URL", "https://api.bttsrvvrs.org/api/v1/lavok-parser/ingest"
 ).strip()
 LAVOK_INGEST_TOKEN = os.getenv("LAVOK_INGEST_TOKEN", "").strip()
+LAVOK_EXPORT_HOST = os.getenv("LAVOK_EXPORT_HOST", "0.0.0.0").strip() or "0.0.0.0"
+LAVOK_EXPORT_PORT = int(os.getenv("LAVOK_EXPORT_PORT", "8788"))
 
 # Главный чат продаж
 CHAT_IDS = [
