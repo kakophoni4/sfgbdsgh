@@ -45,7 +45,7 @@ try {
         -Trigger $trigger `
         -Settings $settings `
         -Principal $principal `
-        -Description "Serve C:\firmy\data\lavok_parser.xlsx for CRM pull on :8788" `
+        -Description "Serve lavok_parser.xlsx for CRM pull on :8788" `
         -Force | Out-Null
 } catch {
     Register-ScheduledTask `
@@ -53,7 +53,7 @@ try {
         -Action $action `
         -Trigger $trigger `
         -Settings $settings `
-        -Description "Serve C:\firmy\data\lavok_parser.xlsx for CRM pull on :8788" `
+        -Description "Serve lavok_parser.xlsx for CRM pull on :8788" `
         -Force | Out-Null
 }
 
@@ -62,37 +62,38 @@ $ruleName = "Lavok export $port"
 try { netsh advfirewall firewall delete rule name="$ruleName" | Out-Null } catch {}
 netsh advfirewall firewall add rule name="$ruleName" dir=in action=allow protocol=TCP localport=$port remoteip=$crmIp | Out-Null
 
-# Large Send Offload: 200KB body never leaves the NIC (CRM sees headers, 0 body)
+# Large Send Offload: body may not leave NIC (CRM sees headers, 0 body)
 Get-NetAdapter | Where-Object { $_.Status -eq "Up" } | ForEach-Object {
-    try { Disable-NetAdapterLso -Name $_.Name -Confirm:$false -ErrorAction Stop; Write-Host ("  LSO off: " + $_.Name) } catch {}
+    try {
+        Disable-NetAdapterLso -Name $_.Name -Confirm:$false -ErrorAction Stop
+        Write-Host ("  LSO off: " + $_.Name)
+    } catch {}
 }
 
 Start-ScheduledTask -TaskName $taskName
 Start-Sleep -Seconds 2
 
-Write-Host "OK: task '$taskName' started."
-Write-Host ("  Listen:  http://0.0.0.0:{0}/lavok/export.xlsx" -f $port)
-Write-Host ("  Allow:   remote IP {0}" -f $crmIp)
+Write-Host ("OK: task '" + $taskName + "' started.")
+Write-Host ("  Listen:  http://0.0.0.0:" + $port + "/lavok/export.xlsx")
+Write-Host ("  Allow:   remote IP " + $crmIp)
 Write-Host "  Header:  X-Lavok-Ingest-Token"
 
-# hint public IP for CRM
 try {
     $pub = (Invoke-RestMethod -Uri "https://api.ipify.org" -TimeoutSec 10)
-    Write-Host ("  Public:  http://{0}:{1}/lavok/export.xlsx" -f $pub, $port)
-    Write-Host ("Send CRM this URL + token from .env")
+    Write-Host ("  Public:  http://" + $pub + ":" + $port + "/lavok/export.xlsx")
+    Write-Host "Send CRM this URL + token from .env"
 } catch {
-    Write-Host "  Public IP: (lookup failed) — check on the host and send to CRM"
+    Write-Host "  Public IP: (lookup failed) - check on the host and send to CRM"
 }
 
-# local smoke (no token => 403 is fine; healthz ok)
 try {
-    $h = Invoke-WebRequest -Uri ("http://127.0.0.1:{0}/healthz" -f $port) -UseBasicParsing -TimeoutSec 5
-    Write-Host ("  healthz: {0}" -f $h.StatusCode)
+    $h = Invoke-WebRequest -Uri ("http://127.0.0.1:" + $port + "/healthz") -UseBasicParsing -TimeoutSec 5
+    Write-Host ("  healthz: " + $h.StatusCode)
 } catch {
-    Write-Host ("  healthz: FAIL — check task/logs: " + $_.Exception.Message)
+    Write-Host ("  healthz: FAIL - check task/logs: " + $_.Exception.Message)
 }
 
-# Range smoke: expect 206 + 1024 bytes (use curl — PS blocks Range header)
+# Range smoke via curl.exe (PowerShell blocks Range header)
 $token = ""
 $envFile = Join-Path $Root ".env"
 if (Test-Path $envFile) {
@@ -106,7 +107,7 @@ if ($token) {
         $null = & curl.exe -sS -D $tmpHdr -o $tmpOut `
             -H ("X-Lavok-Ingest-Token: " + $token) `
             -H "Range: bytes=0-1023" `
-            ("http://127.0.0.1:{0}/lavok/export.xlsx" -f $port) `
+            ("http://127.0.0.1:" + $port + "/lavok/export.xlsx") `
             --connect-timeout 10 --max-time 20
         $status = 0
         if (Test-Path $tmpHdr) {
@@ -115,12 +116,12 @@ if ($token) {
         }
         $len = 0
         if (Test-Path $tmpOut) { $len = (Get-Item $tmpOut).Length }
-        Write-Host ("  range:   HTTP {0}, body={1} bytes (expect 206 / 1024)" -f $status, $len)
+        Write-Host ("  range:   HTTP " + $status + ", body=" + $len + " bytes (expect 206 / 1024)")
         if ($status -eq 206 -and $len -eq 1024) {
             Write-Host "  range:   OK"
         }
     } catch {
-        Write-Host ("  range:   FAIL — " + $_.Exception.Message)
+        Write-Host ("  range:   FAIL - " + $_.Exception.Message)
     } finally {
         Remove-Item $tmpOut, $tmpHdr -Force -ErrorAction SilentlyContinue
     }
