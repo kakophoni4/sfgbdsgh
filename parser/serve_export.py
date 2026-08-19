@@ -89,6 +89,16 @@ class ExportHandler(BaseHTTPRequestHandler):
             return
 
         parsed = _parse_range(self.headers.get("Range") or "", len(data))
+        range_hdr = (self.headers.get("Range") or "").strip()
+        if range_hdr and parsed is None:
+            self.send_response(416)
+            self.send_header("Content-Range", f"bytes */{len(data)}")
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            return
+
         if parsed is None:
             start, end = 0, len(data) - 1
             status = 200
@@ -103,7 +113,8 @@ class ExportHandler(BaseHTTPRequestHandler):
         )
         self.send_header("Content-Disposition", 'attachment; filename="lavok_parser.xlsx"')
         self.send_header("Accept-Ranges", "bytes")
-        self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
+        if status == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
         self.send_header("Content-Length", str(len(blob)))
         self.send_header("ETag", f'"{etag}"')
         self.send_header("Connection", "close")
