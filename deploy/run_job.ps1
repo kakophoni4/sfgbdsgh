@@ -146,8 +146,8 @@ try {
         Write-Log "zsk-bot exit=$ec - continue to export"
     }
 
-    Set-JobStatus "export" "rescore + excel + crm"
-    Write-Log "==> rescore + export"
+    Set-JobStatus "export" "rescore + excel + crm xlsx"
+    Write-Log "==> rescore + export (CRM pulls xlsx, no push)"
     $cmd = @("run_parser.py", "--rescore", "--export-only")
     if ($useCrm) { $cmd += "--export-crm" }
     elseif ($useApps) { $cmd += "--export-apps-script" }

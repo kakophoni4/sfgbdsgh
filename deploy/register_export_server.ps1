@@ -1,6 +1,10 @@
 # Keep HTTP export of lavok_parser.xlsx running (CRM pulls every 5 min).
 #
 #   powershell -ExecutionPolicy Bypass -File deploy\register_export_server.ps1
+#
+# CRM pull:
+#   GET http://<public-ip>:8788/lavok/export.xlsx
+#   Header: X-Lavok-Ingest-Token: <same as .env>
 
 $ErrorActionPreference = "Stop"
 $Root = "C:\firmy"
@@ -10,6 +14,8 @@ if (-not (Test-Path (Join-Path $Root "run_parser.py"))) {
 $py = Join-Path $Root ".venv\Scripts\python.exe"
 if (-not (Test-Path $py)) { $py = "python" }
 $taskName = "FirmParserExport"
+$crmIp = "146.19.125.32"
+$port = 8788
 
 $action = New-ScheduledTaskAction `
     -Execute $py `
@@ -21,7 +27,7 @@ $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
     -StartWhenAvailable `
-    -RestartCount 3 `
+    -RestartCount 999 `
     -RestartInterval (New-TimeSpan -Minutes 1) `
     -ExecutionTimeLimit (New-TimeSpan -Days 3650) `
     -MultipleInstances IgnoreNew
@@ -39,7 +45,7 @@ try {
         -Trigger $trigger `
         -Settings $settings `
         -Principal $principal `
-        -Description "Serve C:\firmy\data\lavok_parser.xlsx for CRM pull" `
+        -Description "Serve C:\firmy\data\lavok_parser.xlsx for CRM pull on :8788" `
         -Force | Out-Null
 } catch {
     Register-ScheduledTask `
@@ -47,17 +53,36 @@ try {
         -Action $action `
         -Trigger $trigger `
         -Settings $settings `
-        -Description "Serve C:\firmy\data\lavok_parser.xlsx for CRM pull" `
+        -Description "Serve C:\firmy\data\lavok_parser.xlsx for CRM pull on :8788" `
         -Force | Out-Null
 }
 
-try {
-    netsh advfirewall firewall delete rule name="Lavok export 8788" | Out-Null
-} catch {}
-netsh advfirewall firewall add rule name="Lavok export 8788" dir=in action=allow protocol=TCP localport=8788 | Out-Null
+# Firewall: only CRM IP
+$ruleName = "Lavok export $port"
+try { netsh advfirewall firewall delete rule name="$ruleName" | Out-Null } catch {}
+netsh advfirewall firewall add rule name="$ruleName" dir=in action=allow protocol=TCP localport=$port remoteip=$crmIp | Out-Null
 
 Start-ScheduledTask -TaskName $taskName
-Write-Host "OK: task '$taskName' is running."
-Write-Host "  GET http://<this-host>:8788/lavok/export.xlsx"
-Write-Host "  Header: X-Lavok-Ingest-Token"
-Write-Host "Give CRM this URL (public IP or DNS), then they set LAVOK_PARSER_PULL_URL."
+Start-Sleep -Seconds 2
+
+Write-Host "OK: task '$taskName' started."
+Write-Host ("  Listen:  http://0.0.0.0:{0}/lavok/export.xlsx" -f $port)
+Write-Host ("  Allow:   remote IP {0}" -f $crmIp)
+Write-Host "  Header:  X-Lavok-Ingest-Token"
+
+# hint public IP for CRM
+try {
+    $pub = (Invoke-RestMethod -Uri "https://api.ipify.org" -TimeoutSec 10)
+    Write-Host ("  Public:  http://{0}:{1}/lavok/export.xlsx" -f $pub, $port)
+    Write-Host ("Send CRM this URL + token from .env")
+} catch {
+    Write-Host "  Public IP: (lookup failed) — check on the host and send to CRM"
+}
+
+# local smoke (no token => 403 is fine; healthz ok)
+try {
+    $h = Invoke-WebRequest -Uri ("http://127.0.0.1:{0}/healthz" -f $port) -UseBasicParsing -TimeoutSec 5
+    Write-Host ("  healthz: {0}" -f $h.StatusCode)
+} catch {
+    Write-Host ("  healthz: FAIL — check task/logs: " + $_.Exception.Message)
+}

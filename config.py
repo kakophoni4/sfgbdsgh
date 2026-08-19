@@ -24,6 +24,8 @@ LAVOK_INGEST_URL = os.getenv(
 LAVOK_INGEST_TOKEN = os.getenv("LAVOK_INGEST_TOKEN", "").strip()
 LAVOK_EXPORT_HOST = os.getenv("LAVOK_EXPORT_HOST", "0.0.0.0").strip() or "0.0.0.0"
 LAVOK_EXPORT_PORT = int(os.getenv("LAVOK_EXPORT_PORT", "8788"))
+# CSV of allowed client IPs for logging/docs (firewall enforced in register_export_server.ps1)
+LAVOK_EXPORT_ALLOW_IP = os.getenv("LAVOK_EXPORT_ALLOW_IP", "146.19.125.32").strip()
 
 # Главный чат продаж
 CHAT_IDS = [
