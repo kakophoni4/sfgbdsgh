@@ -38,6 +38,23 @@ $principal = New-ScheduledTaskPrincipal `
     -RunLevel Highest
 
 Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+
+# Kill previous serve_export (IgnoreNew would keep the old process alive)
+Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object {
+        $_.CommandLine -and (
+            $_.CommandLine -like "*parser.serve_export*" -or
+            $_.CommandLine -like "*serve_export.py*"
+        )
+    } |
+    ForEach-Object {
+        try {
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop
+            Write-Host ("  killed old serve_export pid=" + $_.ProcessId)
+        } catch {}
+    }
+Start-Sleep -Seconds 1
+
 try {
     Register-ScheduledTask `
         -TaskName $taskName `
