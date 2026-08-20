@@ -12,15 +12,25 @@ if (-not (Test-Path (Join-Path $Root "run_parser.py"))) {
     $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 }
 $py = Join-Path $Root ".venv\Scripts\python.exe"
+$pyw = Join-Path $Root ".venv\Scripts\pythonw.exe"
 if (-not (Test-Path $py)) { $py = "python" }
+if (Test-Path $pyw) { $exe = $pyw } else { $exe = $py }
 $taskName = "FirmParserExport"
 $crmIp = "146.19.125.32"
 $port = 8788
 
-$action = New-ScheduledTaskAction `
-    -Execute $py `
-    -Argument "-m parser.serve_export" `
-    -WorkingDirectory $Root
+# pythonw = no CMD window. Fallback: powershell hidden.
+if ($exe -eq $pyw) {
+    $action = New-ScheduledTaskAction `
+        -Execute $exe `
+        -Argument "-m parser.serve_export" `
+        -WorkingDirectory $Root
+} else {
+    $action = New-ScheduledTaskAction `
+        -Execute "powershell.exe" `
+        -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"Set-Location -LiteralPath '$Root'; & '$py' -m parser.serve_export`"" `
+        -WorkingDirectory $Root
+}
 
 $trigger = New-ScheduledTaskTrigger -AtStartup
 $settings = New-ScheduledTaskSettingsSet `
@@ -90,7 +100,7 @@ Get-NetAdapter | Where-Object { $_.Status -eq "Up" } | ForEach-Object {
 Start-ScheduledTask -TaskName $taskName
 Start-Sleep -Seconds 2
 
-Write-Host ("OK: task '" + $taskName + "' started.")
+Write-Host ("OK: task '" + $taskName + "' started (no CMD window).")
 Write-Host ("  Listen:  http://0.0.0.0:" + $port + "/lavok/export.xlsx")
 Write-Host ("  Allow:   remote IP " + $crmIp)
 Write-Host "  Header:  X-Lavok-Ingest-Token"
