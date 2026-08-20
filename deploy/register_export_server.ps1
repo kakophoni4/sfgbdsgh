@@ -40,7 +40,8 @@ $settings = New-ScheduledTaskSettingsSet `
     -RestartCount 999 `
     -RestartInterval (New-TimeSpan -Minutes 1) `
     -ExecutionTimeLimit (New-TimeSpan -Days 3650) `
-    -MultipleInstances IgnoreNew
+    -MultipleInstances IgnoreNew `
+    -Hidden
 
 $principal = New-ScheduledTaskPrincipal `
     -UserId $env:USERNAME `
@@ -49,7 +50,7 @@ $principal = New-ScheduledTaskPrincipal `
 
 Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 
-# Kill previous serve_export (IgnoreNew would keep the old process alive)
+# Kill previous serve_export (console python.exe OR pythonw.exe)
 Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
     Where-Object {
         $_.CommandLine -and (
@@ -64,6 +65,8 @@ Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         } catch {}
     }
 Start-Sleep -Seconds 1
+
+Write-Host ("  exe: " + $exe)
 
 try {
     Register-ScheduledTask `
