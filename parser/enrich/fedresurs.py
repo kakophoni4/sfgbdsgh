@@ -136,6 +136,12 @@ def fetch_fedresurs(inn: str) -> FedresursReport:
                         pj = p.json()
                         items = pj.get("pageData") or pj.get("items") or pj.get("Result") or []
                         if isinstance(items, list):
+                            report.extras["publications"] = items
+                            report.extras["publications_total"] = pj.get("found") or pj.get("total")
+                            report.extras["publications_complete"] = (
+                                report.extras["publications_total"] is not None
+                                and int(report.extras["publications_total"]) <= len(items)
+                            )
                             lease_n = 0
                             for it in items:
                                 blob = str(it).lower()

@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from .http_util import make_session
@@ -23,6 +23,8 @@ class KadReport:
     sample: list[str] | None = None
     error: str = ""
     source: str = ""
+    cases: list[dict[str, Any]] = field(default_factory=list)
+    details_complete: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -127,6 +129,8 @@ def _fetch_kad_http(inn: str) -> KadReport:
                 cases_found=int(total),
                 sample=samples,
                 source=url,
+                cases=[x for x in items if isinstance(x, dict)] if isinstance(items, list) else [],
+                details_complete=isinstance(items, list) and int(total) <= len(items),
             )
         except Exception as e:  # noqa: BLE001
             last_err = str(e)

@@ -116,6 +116,7 @@ async def _fetch_one(
     inn: str,
     *,
     timeout: float = 35.0,
+    require_correlation: bool = False,
 ) -> ZskBotReport:
     report = ZskBotReport(inn=inn, checked_at=_now())
     last_id = 0
@@ -128,7 +129,7 @@ async def _fetch_one(
         return report
 
     try:
-        await client.send_message(entity, inn)
+        sent = await client.send_message(entity, inn)
     except FloodWaitError as e:
         report.error = f"flood:{e.seconds}"
         return report
@@ -152,11 +153,18 @@ async def _fetch_one(
                 text = (msg.message or "").strip()
                 if not text:
                     continue
+                if require_correlation:
+                    mentioned = re.findall(r"(?<!\d)(?:\d{12}|\d{10})(?!\d)", text)
+                    reply_to = getattr(msg, "reply_to_msg_id", None)
+                    if mentioned and inn not in mentioned:
+                        continue
+                    if inn not in mentioned and reply_to != sent.id:
+                        continue
                 # ответ бота по нашему ИНН или общий шаблон ЗСК
                 if inn not in text and "зск" not in text.lower() and "риск" not in text.lower():
                     continue
                 level, label = parse_zsk_reply(text)
-                report.raw = text[:800]
+                report.raw = text if require_correlation else text[:800]
                 report.level = level
                 report.label = label
                 if level in {"green", "yellow", "red"}:

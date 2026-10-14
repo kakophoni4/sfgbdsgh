@@ -25,6 +25,10 @@ $files = @(
     "parser/export_fingerprint.py",
     "parser/export_crm.py",
     "parser/serve_export.py",
+    "parser/company_checks.py",
+    "parser/check_process.py",
+    "parser/company_check_sources.py",
+    "parser/export_company_checks.py",
     "deploy/apps_script_sheets.js",
     "deploy/setup_apps_script.ps1",
     "deploy/show_status.ps1",
@@ -65,7 +69,11 @@ $required = @(
     "parser/export_fingerprint.py",
     "parser/export_apps_script.py",
     "parser/export_excel.py",
-    "deploy/run_job.ps1"
+    "deploy/run_job.ps1",
+    "parser/company_checks.py",
+    "parser/company_check_sources.py",
+    "parser/check_process.py",
+    "parser/export_company_checks.py"
 )
 
 function Get-MainSha {

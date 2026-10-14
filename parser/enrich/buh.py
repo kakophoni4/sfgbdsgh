@@ -25,6 +25,9 @@ class YearFinance:
     borrowed_short: int | None = None  # 1510
     borrowed_long: int | None = None  # 1410
     payables: int | None = None  # 1520
+    net_profit: int | None = None  # 2400
+    assets: int | None = None  # 1600
+    cash: int | None = None  # 1250
 
 
 @dataclass
@@ -87,6 +90,9 @@ def _parse_year_block(block: dict[str, Any]) -> YearFinance:
         borrowed_short=borrowed_short,
         borrowed_long=borrowed_long,
         payables=payables,
+        net_profit=_to_rub(fr.get("current2400")),
+        assets=_to_rub(bal.get("current1600")),
+        cash=_to_rub(bal.get("current1250")),
     )
 
 
