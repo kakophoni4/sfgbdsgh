@@ -30,7 +30,14 @@ Excel содержит листы:
 
 Разработка и тесты выполнены локально. На удалённом сервере этот код ещё не установлен.
 
-Изменения ещё не опубликованы в GitHub. Устанавливайте приложенный пакет; обновление со старой ветки GitHub может вернуть прежний код.
+Код проверки опубликован в ветке `main` репозитория `kakophoni4/sfgbdsgh`. Для обновления существующего сервера из GitHub запустите PowerShell от имени администратора:
+
+```powershell
+Invoke-WebRequest "https://raw.githubusercontent.com/kakophoni4/sfgbdsgh/main/deploy/update_company_checks.ps1" -OutFile "C:\firmy\deploy\update_company_checks.ps1" -UseBasicParsing
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\firmy\deploy\update_company_checks.ps1
+```
+
+Скрипт сначала скачивает необходимые файлы одного коммита, проверяет Python-синтаксис и делает небольшую копию изменяемого кода. Затем перезапускает службу проверки, сохраняя определение существующей задачи. При ошибке копирования/импорта восстанавливает предыдущий код. Старый архивный установщик ниже остаётся альтернативой.
 
 Распакуйте пакет `company-checks.zip`, например в `C:\company-checks`. Запустите PowerShell с правами администратора:
 
